@@ -1,22 +1,6 @@
 import os
-import gdown  # کتابخانه‌ای عالی برای دانلود از درایو
-
-def download_models():
-    # آی‌دی فایل‌های خودت را که از مرحله قبل گرفتی اینجا جایگزین کن
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    
-    for filename, file_id in model_ids.items():
-        if not os.path.exists(filename):
-            with st.spinner(f'Downloading {filename} from Drive...'):
-                url = f'https://drive.google.com/uc?id={file_id}'
-                gdown.download(url, filename, quiet=False)
-
-# قبل از لود کردن مدل‌ها، این تابع را صدا بزنید
-download_models()import streamlit as st
+import gdown
+import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
@@ -25,7 +9,24 @@ from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری ثابت مدل شما (Ensemble UNet) ---
+# --- ۰. تابع دانلود مدل‌ها (قبل از لود کردن مدل‌ها باید اجرا شود) ---
+def download_models():
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    
+    for filename, file_id in model_ids.items():
+        if not os.path.exists(filename):
+            with st.spinner(f'در حال دانلود مدل {filename} از گوگل درایو...'):
+                url = f'https://drive.google.com/uc?id={file_id}'
+                try:
+                    gdown.download(url, filename, quiet=False)
+                except Exception as e:
+                    st.error(f"خطا در دانلود {filename}: {e}")
+
+# --- ۱. معماری مدل (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -64,18 +65,22 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر مدل‌ها و پیش‌بینی ---
 @st.cache_resource
 def load_all_engines():
-    # مسیرها طبق Saved Information شما
+    # اول دانلود مدل‌ها اگر وجود ندارند
+    download_models()
+    
     paths = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     models = []
     for p in paths:
-        try:
-            m = CephaUNet(n_landmarks=29)
-            ckpt = torch.load(p, map_location="cpu")
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict(state)
-            m.eval()
-            models.append(m)
-        except: pass
+        if os.path.exists(p):
+            try:
+                m = CephaUNet(n_landmarks=29)
+                ckpt = torch.load(p, map_location="cpu")
+                state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+                m.load_state_dict(state)
+                m.eval()
+                models.append(m)
+            except Exception as e:
+                st.warning(f"مدل {p} بارگذاری نشد: {e}")
     return models
 
 def run_inference(image_pil, models):
@@ -97,86 +102,66 @@ def run_inference(image_pil, models):
         lms[i] = [int(x * ow / 384), int(y * oh / 384)]
     return lms, (ow, oh)
 
-# --- ۳. رابط کاربری واکنش‌گرا (Mobile Ready) ---
-st.set_page_config(layout="wide", page_title="Aariz Mobile-Web v1.0")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(layout="wide", page_title="Aariz AI Mobile")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+
+# فراخوانی لودر (که خودش دانلودر را صدا می‌زند)
 engines = load_all_engines()
 
 with st.sidebar:
-    st.header("📲 Control Panel")
-    # اسلایدر برای کنترل سایز در موبایل و دسکتاپ
+    st.header("📲 Aariz Control")
     ui_width = st.slider("Magnification Scale", 300, 1200, 750)
-    uploaded_file = st.file_uploader("Upload or Take Photo", type=["png", "jpg", "jpeg"])
-    target_idx = st.selectbox("Active Landmark", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"])
+    target_idx = st.selectbox("Landmark", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
 if uploaded_file and engines:
     img_raw = Image.open(uploaded_file).convert("RGB")
-    
-    # مدیریت کش برای جلوگیری از اجرای تکراری مدل روی یک عکس
     file_id = uploaded_file.name
+    
     if "lms" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("Analyzing Cephalogram with Ensemble Models..."):
+        with st.spinner("Analyzing..."):
             st.session_state.lms, st.session_state.orig_size = run_inference(img_raw, engines)
             st.session_state.file_id = file_id
 
-    # نمایش دو ستونه (در موبایل اتوماتیک زیر هم می‌روند)
     col_main, col_detail = st.columns([2, 1])
     
     with col_main:
         ow, oh = st.session_state.orig_size
         draw = ImageDraw.Draw(img_raw)
-        
-        # فونت پویا بر اساس رزولوشن تصویر
-        f_size = int(ow * 0.03)
-        try: font = ImageFont.truetype("arialbd.ttf", f_size)
+        try: font = ImageFont.truetype("arial.ttf", int(ow * 0.03))
         except: font = ImageFont.load_default()
 
-        # رسم نقاط روی تصویر اصلی
         for i, pos in st.session_state.lms.items():
             is_active = (i == target_idx)
             color = "#00FF00" if i < 15 else "#FF00FF"
             r = int(ow * 0.007)
             if is_active:
-                draw.ellipse([pos[0]-r-15, pos[1]-r-15, pos[0]+r+15, pos[1]+r+15], outline="red", width=10)
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=3)
-            if is_active or ow < 2000: # نمایش نام فقط برای نقطه فعال یا در تصاویر کوچک
-                draw.text((pos[0]+15, pos[1]-30), f"{i}", fill="yellow", font=font)
+                draw.ellipse([pos[0]-r-10, pos[1]-r-10, pos[0]+r+10, pos[1]+r+10], outline="red", width=10)
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color)
 
-        st.subheader("📍 Interactive Canvas")
-        # اسلایدر ui_width عرض تصویر را اینجا کنترل می‌کند
-        coords = streamlit_image_coordinates(img_raw, width=ui_width, key="canvas")
-        
-        if coords:
+        res = streamlit_image_coordinates(img_raw, width=ui_width, key="canvas")
+        if res:
             scale = ow / ui_width
-            new_pos = [int(coords["x"] * scale), int(coords["y"] * scale)]
-            if st.session_state.lms[target_idx] != new_pos:
-                st.session_state.lms[target_idx] = new_pos
+            new_p = [int(res["x"] * scale), int(res["y"] * scale)]
+            if st.session_state.lms[target_idx] != new_p:
+                st.session_state.lms[target_idx] = new_p
                 st.rerun()
 
     with col_detail:
-        st.subheader("🔍 Precision Zoom")
+        st.subheader("🔍 Zoom")
         cur_pos = st.session_state.lms[target_idx]
-        z = 120 # شعاع زوم
+        z = 120
         box = (max(0, cur_pos[0]-z), max(0, cur_pos[1]-z), min(ow, cur_pos[0]+z), min(oh, cur_pos[1]+z))
+        crop = img_raw.crop(box)
+        st.image(crop, use_container_width=True)
         
-        crop = Image.open(uploaded_file).convert("RGB").crop(box)
-        # رسم Crosshair در مرکز زوم
-        cw, ch = crop.size
-        ImageDraw.Draw(crop).line([(cw//2,0),(cw//2,ch)], fill="red", width=2)
-        ImageDraw.Draw(crop).line([(0,ch//2),(cw,ch//2)], fill="red", width=2)
-        
-        st.image(crop, use_container_width=True, caption=f"Centering {landmark_names[target_idx]}")
-        
-        # دکمه‌های کنترلی بزرگ برای موبایل
-        st.write("### ⌨️ Nudge Control")
-        m1, m2, m3 = st.columns(3)
-        if m2.button("🔼", use_container_width=True): st.session_state.lms[target_idx][1] -= 1; st.rerun()
+        # Nudge buttons
+        c1, c2, c3 = st.columns(3)
+        if c2.button("🔼"): st.session_state.lms[target_idx][1] -= 1; st.rerun()
         k1, k2, k3 = st.columns(3)
-        if k1.button("◀️", use_container_width=True): st.session_state.lms[target_idx][0] -= 1; st.rerun()
-        if k3.button("▶️", use_container_width=True): st.session_state.lms[target_idx][0] += 1; st.rerun()
-        if k2.button("🔽", use_container_width=True): st.session_state.lms[target_idx][1] += 1; st.rerun()
-
-    st.success(f"Point {landmark_names[target_idx]} fixed at {st.session_state.lms[target_idx]}")
-
+        if k1.button("◀️"): st.session_state.lms[target_idx][0] -= 1; st.rerun()
+        if k3.button("▶️"): st.session_state.lms[target_idx][0] += 1; st.rerun()
+        if k2.button("🔽"): st.session_state.lms[target_idx][1] += 1; st.rerun()
 else:
-    st.info("👋 Please upload a Cephalogram image to start AI analysis.")
+    st.info("Please upload a file.")
