@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import cv2
 import os
+import urllib.request
 from PIL import Image, ImageDraw
 
-# --- ۱. تعریف کامل معماری مدل (UNet) استخراج شده از Untitled6.ipynb ---
+# --- ۱. تعریف معماری مدل UNet ---
 class UNet(nn.Module):
     def __init__(self, n_channels=1, n_classes=29):
         super(UNet, self).__init__()
@@ -41,25 +42,39 @@ class UNet(nn.Module):
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
-        # اعمال اتصالات (Skip Connections) ساده شده برای پایداری در وب
         x = self.up1(x4)
         x = self.up2(x)
         x = self.up3(x)
         return self.outc(x)
 
-# --- ۲. تنظیمات صفحه و مدیریت حافظه ---
-st.set_page_config(page_title="CephRad AI Analysis", layout="wide")
-
+# --- ۲. مدیریت دانلود و بارگذاری مدل‌ها (Ensemble) ---
 @st.cache_resource
 def load_all_models():
     device = torch.device('cpu')
+    os.makedirs('models', exist_ok=True)
+    
+    # لینک‌های مستقیم مدل‌ها (باید لینک مستقیم دانلود را اینجا جایگزین کنید)
+    # اگر مدل‌ها در درایو هستند، باید لینک Direct Download بسازید
+    model_urls = {
+        'general': 'لینک_مستقیم_مدل_عمومی',
+        'specialist': 'لینک_مستقیم_مدل_اسپشیالیست',
+        'tmj': 'لینک_مستقیم_مدل_tmj'
+    }
+    
     checkpoints = {
         'general': 'models/checkpoint_unet_clinical.pth',
         'specialist': 'models/specialist_pure_model.pth',
         'tmj': 'models/tmj_specialist_model.pth'
     }
+    
     models = {}
     for name, path in checkpoints.items():
+        # اگر فایل در سرور استریم‌لیت نبود، دانلود شود
+        if not os.path.exists(path):
+            with st.spinner(f'در حال دانلود مدل {name}... (این کار فقط یکبار انجام می‌شود)'):
+                # urllib.request.urlretrieve(model_urls[name], path) # غیرفعال تا زمان جایگزینی لینک
+                pass 
+        
         model = UNet(n_channels=1, n_classes=29)
         if os.path.exists(path):
             model.load_state_dict(torch.load(path, map_location=device))
@@ -67,14 +82,13 @@ def load_all_models():
         models[name] = model
     return models, device
 
-# --- ۳. توابع محاسباتی و آنالیزها ---
+# --- ۳. توابع محاسباتی آنالیز Steiner و McNamara ---
 def get_landmarks(heatmaps):
-    # لیست ۲۹ لندمارک بر اساس ترتیب فایل‌های آنوتیشن
     landmark_names = [
         'Sella', 'Nasion', 'A-point', 'B-point', 'Pogonion', 'Menton', 'Gnathion', 
         'Gonion', 'Orbitale', 'Porion', 'Condylion', 'Articulare', 'ANS', 'PNS',
         'Upper Incisor Tip', 'Lower Incisor Tip', 'Soft Tissue Nasion', 'Tip of Nose', 
-        'Soft Tissue Menton', 'TMJ_Point', 'Ricketts_Point' # و مابقی نقاط تا ۲۹ مورد
+        'Soft Tissue Menton', 'TMJ_Point', 'Ricketts_Point' # و مابقی تا ۲۹ نقطه
     ]
     landmarks = {}
     for i in range(min(len(landmark_names), heatmaps.shape[1])):
@@ -83,65 +97,66 @@ def get_landmarks(heatmaps):
         landmarks[landmark_names[i]] = max_loc
     return landmarks
 
-def calculate_angles(pts, pixel_size):
-    def angle(p1, p2, p3):
+def calculate_ortho_analysis(pts, pixel_size):
+    def get_angle(p1, p2, p3):
         v1, v2 = np.array(p1) - np.array(p2), np.array(p3) - np.array(p2)
         dot = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
         return np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
 
-    results = {}
+    res = {}
     try:
         if all(k in pts for k in ['Sella', 'Nasion', 'A-point']):
-            results['SNA'] = angle(pts['Sella'], pts['Nasion'], pts['A-point'])
+            res['SNA'] = get_angle(pts['Sella'], pts['Nasion'], pts['A-point'])
         if all(k in pts for k in ['Sella', 'Nasion', 'B-point']):
-            results['SNB'] = angle(pts['Sella'], pts['Nasion'], pts['B-point'])
-        if 'SNA' in results and 'SNB' in results:
-            results['ANB'] = results['SNA'] - results['SNB']
+            res['SNB'] = get_angle(pts['Sella'], pts['Nasion'], pts['B-point'])
+        if 'SNA' in res and 'SNB' in res:
+            res['ANB'] = res['SNA'] - res['SNB']
         if all(k in pts for k in ['Condylion', 'A-point']):
-            results['Midface_Length'] = np.linalg.norm(np.array(pts['Condylion']) - np.array(pts['A-point'])) * pixel_size
+            res['McNamara_Length'] = np.linalg.norm(np.array(pts['Condylion']) - np.array(pts['A-point'])) * pixel_size
     except: pass
-    return results
+    return res
 
-# --- ۴. رابط کاربری (Streamlit UI) ---
-st.title("🦷 سامانه آنالیز هوشمند CephRad")
-st.write("اجرای مدل‌های Ensemble روی لترال سفالوگرام و آنالیز Steiner/McNamara")
+# --- ۴. بدنه اصلی برنامه Streamlit ---
+st.set_page_config(page_title="CephRad AI", layout="centered")
+st.title("🦷 CephRad: آنالیز هوشمند رادیوگرافی")
 
-uploaded_file = st.file_uploader("تصویر را آپلود کنید", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.file_uploader("تصویر سفالومتری را انتخاب کنید", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file:
     img = Image.open(uploaded_file).convert('RGB')
-    gray_img = img.convert('L')
     st.image(img, caption="تصویر ورودی", use_column_width=True)
 
-    if st.button("🚀 شروع آنالیز"):
-        with st.spinner("در حال تحلیل با سه مدل (Clinical, Specialist, TMJ)..."):
+    if st.button("🚀 اجرای آنالیز کلینیکی"):
+        with st.spinner("پردازش توسط مدل‌های Ensemble..."):
             models, device = load_all_models()
-            input_tensor = torch.from_numpy(np.array(gray_img.resize((512, 512)))).float().unsqueeze(0).unsqueeze(0) / 255.0
+            gray_img = img.convert('L').resize((512, 512))
+            input_tensor = torch.from_numpy(np.array(gray_img)).float().unsqueeze(0).unsqueeze(0) / 255.0
             
             with torch.no_grad():
-                h_gen = models['general'](input_tensor)
-                h_spec = models['specialist'](input_tensor)
-                h_tmj = models['tmj'](input_tensor)
-                final_h = (h_gen + h_spec + h_tmj) / 3.0
+                # ترکیب خروجی سه مدل
+                out = (models['general'](input_tensor) + models['specialist'](input_tensor) + models['tmj'](input_tensor)) / 3.0
             
-            # استخراج پیکسل سایز از CSV
-            df_map = pd.read_csv('mappings.csv') if os.path.exists('mappings.csv') else None
-            p_size = df_map[df_map['image_name'] == uploaded_file.name]['pixel_size'].values[0] if df_map is not None else 0.1
+            # خواندن ضریب تبدیل
+            pixel_size = 0.1 # مقدار پیش‌فرض
+            if os.path.exists('mappings.csv'):
+                df = pd.read_csv('mappings.csv')
+                match = df[df['image_name'] == uploaded_file.name]
+                if not match.empty: pixel_size = match['pixel_size'].values[0]
+
+            pts = get_landmarks(out)
+            analysis = calculate_ortho_analysis(pts, pixel_size)
             
-            pts = get_landmarks(final_h)
-            metrics = calculate_angles(pts, p_size)
+            # رسم لندمارک‌ها
             
-            # رسم نقاط روی عکس
             draw = ImageDraw.Draw(img)
             for name, p in pts.items():
-                draw.ellipse((p[0]-4, p[1]-4, p[0]+4, p[1]+4), fill='red')
-            st.image(img, caption="لندمارک‌های شناسایی شده", use_column_width=True)
-            
-            # نمایش نتایج
-            st.subheader("📊 گزارش آنالیز کلینیکی")
+                draw.ellipse((p[0]-5, p[1]-5, p[0]+5, p[1]+5), fill='red', outline='white')
+            st.image(img, caption="لندمارک‌های استخراج شده", use_column_width=True)
+
+            # نمایش نتایج در کارت‌های رنگی
+            st.subheader("📋 گزارش نهایی")
             c1, c2, c3 = st.columns(3)
-            c1.metric("SNA", f"{metrics.get('SNA', 0):.1f}°")
-            c2.metric("SNB", f"{metrics.get('SNB', 0):.1f}°")
-            c3.metric("ANB", f"{metrics.get('ANB', 0):.1f}°")
-            
-            st.write(f"📏 طول موثر صورت (McNamara): {metrics.get('Midface_Length', 0):.2f} mm")
+            c1.metric("SNA", f"{analysis.get('SNA', 0):.1f}°")
+            c2.metric("SNB", f"{analysis.get('SNB', 0):.1f}°")
+            c3.metric("ANB", f"{analysis.get('ANB', 0):.1f}°")
+            st.info(f"📏 طول موثر فک بالا (McNamara): {analysis.get('McNamara_Length', 0):.2f} mm")
