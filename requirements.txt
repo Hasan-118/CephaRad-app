@@ -1,8 +1,7 @@
 streamlit
 torch
 torchvision
-opencv-python-headless
 numpy
+pandas
+opencv-python-headless
 Pillow
-streamlit-image-coordinates
-gdown
