@@ -5,16 +5,13 @@ import numpy as np
 import os
 import json
 import gdown
-from datetime import datetime
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-import torch.nn.functional as F
 
 # --- ۱. تنظیمات اولیه و دانلود خودکار مدل‌ها ---
 RESULTS_DIR = "Aariz_Results"
-if not os.path.exists(RESULTS_DIR):
-    os.makedirs(RESULTS_DIR)
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 @st.cache_resource
 def download_models():
@@ -70,7 +67,7 @@ class CephaUNet(nn.Module):
 # --- ۳. بارگذاری مدل‌ها ---
 @st.cache_resource
 def load_aariz_models():
-    download_models() # ابتدا اطمینان از وجود فایل‌ها
+    download_models()
     model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loaded_models = []
@@ -81,7 +78,6 @@ def load_aariz_models():
                 m = CephaUNet(n_landmarks=29).to(device)
                 ckpt = torch.load(f, map_location=device)
                 state_dict = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-                # اصلاح کلیدهای module برای انطباق با آموزش قبلی
                 new_state = {k.replace('module.', ''): v for k, v in state_dict.items()}
                 m.load_state_dict(new_state, strict=False)
                 m.eval()
@@ -90,21 +86,17 @@ def load_aariz_models():
                 st.sidebar.error(f"خطا در لود {f}: {e}")
     return loaded_models, device
 
-# --- ۴. پیش‌بینی هوشمند ---
-def run_ai_prediction(img_path, models, device):
-    img_orig = Image.open(img_path).convert('L')
-    orig_size = img_orig.size
-    img_resized = img_orig.resize((512, 512), Image.LANCZOS)
-    
-    input_tensor = transforms.ToTensor()(img_resized).unsqueeze(0).to(device)
+# --- ۴. پیش‌بینی هوشمند (منطق انسامبل Aariz) ---
+def run_ai_prediction(img_pil, models, device):
+    orig_size = img_pil.size
+    img_gray = img_pil.convert('L').resize((512, 512), Image.LANCZOS)
+    input_tensor = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
     
     with torch.inference_mode():
         outs = [mod(input_tensor)[0].cpu().float().numpy() for mod in models]
     
-    # تفکیک نواحی تخصصی بر اساس منطق Aariz
     ANT_IDX = [10, 14, 9, 5, 28, 20]
     POST_IDX = [7, 11, 12, 15]
-    
     coords = {}
     sx, sy = orig_size[0]/512, orig_size[1]/512
     
@@ -120,46 +112,36 @@ def run_ai_prediction(img_path, models, device):
 # --- ۵. رابط کاربری (UI) ---
 st.set_page_config(page_title="Aariz AI Station V2", layout="wide")
 models, device = load_aariz_models()
-
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-st.sidebar.title("⚙️ سخت‌افزار")
-st.sidebar.info(f"Device: {device.type.upper()} | Models: {len(models)}/3")
+st.sidebar.title("🦷 Aariz AI Station")
+st.sidebar.info(f"سخت‌افزار: {device.type.upper()} | مدل‌ها: {len(models)}/3")
 
-# ورودی تصویر (به جای مسیر سخت‌افزاری، آپلود مستقیم را فعال کردیم)
-uploaded_file = st.sidebar.file_uploader("آپلود سفالوگرام:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
-if uploaded_file:
-    # ذخیره موقت برای پردازش
-    with open("temp_cepha.png", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
+if uploaded_file and models:
+    raw_img = Image.open(uploaded_file).convert("RGB")
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner('هوش مصنوعی در حال آنالیز لندمارک‌ها...'):
-            st.session_state.lms = run_ai_prediction("temp_cepha.png", models, device)
+        with st.spinner('هوش مصنوعی در حال تحلیل...'):
+            st.session_state.lms = run_ai_prediction(raw_img, models, device)
             st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("نقطه فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("نقطه فعال جهت اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-    col1, col2 = st.columns([2, 1])
-    
+    col1, col2 = st.columns([3, 1])
     with col1:
-        raw_img = Image.open("temp_cepha.png").convert("RGB")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
-        
-        # رسم Steiner
+        # رسم Steiner (S-N-A)
         draw.line([tuple(l[10]), tuple(l[4]), tuple(l[0])], fill="yellow", width=4)
-        
         for i, pos in l.items():
             c = "red" if i == target_idx else "#00FF00"
             r = 15 if i == target_idx else 8
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=c, outline="white")
 
-        st.subheader(f"📍 تنظیم دستی: {landmark_names[target_idx]}")
+        st.subheader(f"📍 اصلاح دستی: {landmark_names[target_idx]}")
         res = streamlit_image_coordinates(draw_img, width=850, key="aariz_coord")
-        
         if res:
             scale = raw_img.width / 850
             nx, ny = int(res["x"]*scale), int(res["y"]*scale)
@@ -171,15 +153,15 @@ if uploaded_file:
         st.header("📊 Clinical Report")
         def angle(p1, p2, p3):
             v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 2)
+            norm = np.linalg.norm(v1)*np.linalg.norm(v2)
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 2)
         
-        sna = angle(l[10], l[4], l[0])
-        snb = angle(l[10], l[4], l[2])
-        anb = round(sna - snb, 2)
-        
+        sna = angle(l[10], l[4], l[0]); snb = angle(l[10], l[4], l[2]); anb = round(sna - snb, 2)
         st.metric("SNA (Maxilla)", f"{sna}°")
         st.metric("SNB (Mandible)", f"{snb}°")
         st.metric("ANB (Class)", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
 
-        if st.button("💾 ذخیره نهایی آنالیز"):
-            st.success("گزارش و مختصات در حافظه ثبت شد.")
+        if st.button("💾 ثبت نهایی آنالیز"):
+            st.success("گزارش با موفقیت ذخیره شد.")
+else:
+    st.warning("در انتظار آپلود تصویر و لود شدن مدل‌ها...")
