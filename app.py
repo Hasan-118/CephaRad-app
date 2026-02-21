@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع (بدون تغییر) ---
+# --- ۱. ساختار مدل مرجع ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. توابع لودر و محاسبات دقیق ---
+# --- ۲. توابع کمکی ---
 @st.cache_resource
 def load_aariz_system():
     model_ids = {
@@ -60,7 +60,18 @@ def load_aariz_system():
         except: pass
     return loaded_models, device
 
-# --- ۳. رابط کاربری با تمرکز بر دقت بالا ---
+def get_safe_magnifier(img, coord, size=120):
+    w, h = img.size
+    x, y = coord
+    left = max(0, min(x - size//2, w - size))
+    top = max(0, min(y - size//2, h - size))
+    crop = img.crop((int(left), int(top), int(left+size), int(top+size))).resize((400, 400), Image.LANCZOS)
+    draw = ImageDraw.Draw(crop)
+    draw.line((180, 200, 220, 200), fill="red", width=2)
+    draw.line((200, 180, 200, 220), fill="red", width=2)
+    return crop, (left, top)
+
+# --- ۳. رابط کاربری اصلی ---
 st.set_page_config(page_title="Aariz Precision V3.6", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
@@ -72,36 +83,67 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("استخراج لندمارک‌ها با دقت حداکثری..."):
-            # ۱. پیش‌پردازش دقیق
+        with st.spinner("AI Analysis (High Precision)..."):
             img_input = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
             t = transforms.ToTensor()(img_input).unsqueeze(0).to(device)
-            
-            # ۲. استخراج هیت‌مپ‌ها از هر ۳ مدل
             with torch.no_grad():
                 preds = [m(t)[0].cpu().numpy() for m in models]
             
             coords = {}
-            # فاکتور مقیاس دقیق (اعشاری)
             scale_x, scale_y = W / 512.0, H / 512.0
-            
-            # ۳. منطق انسمبل هوشمند (دقیقاً مشابه مرجع اول شما)
-            ANT_IDX = [1, 20, 21, 22, 24, 25, 26, 28] # قدامی
-            TMJ_IDX = [11, 12, 15, 16] # خلفی/کندیل
+            ANT_IDX = [1, 20, 21, 22, 24, 25, 26, 28] 
+            TMJ_IDX = [11, 12, 15, 16] 
             
             for i in range(29):
-                if i in ANT_IDX:
-                    hm = preds[1][i] # متخصص قدامی
-                elif i in TMJ_IDX:
-                    hm = preds[2][i] # متخصص خلفی
-                else:
-                    hm = preds[0][i] # مدل جنرال
-                
+                hm = preds[1][i] if i in ANT_IDX else (preds[2][i] if i in TMJ_IDX else preds[0][i])
                 y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                # نگاشت دقیق به مختصات تصویر اصلی
                 coords[i] = [int(x * scale_x), int(y * scale_y)]
-            
             st.session_state.lms = coords
             st.session_state.file_id = uploaded_file.name
 
-    # [ادامه کد شامل ذره‌بین ایمن V3.5 و ترسیم...]
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+
+    col1, col2 = st.columns([1.2, 2])
+    
+    with col1:
+        st.subheader("🔍 Micro-Adjustment")
+        mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
+        res_mag = streamlit_image_coordinates(mag_img, key=f"mag_{target_idx}")
+        if res_mag:
+            scale = 120 / 400
+            new_coord = [int(off_x + (res_mag["x"] * scale)), int(off_y + (res_mag["y"] * scale))]
+            if st.session_state.lms[target_idx] != new_coord:
+                st.session_state.lms[target_idx] = new_coord
+                st.rerun()
+
+    with col2:
+        st.subheader("🖼 Full View")
+        draw_img = raw_img.copy()
+        draw = ImageDraw.Draw(draw_img)
+        l = st.session_state.lms
+        for i, pos in l.items():
+            color = "red" if i == target_idx else "#00FF00"
+            r = 15 if i == target_idx else 8
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+        
+        res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        if res_main:
+            scale_m = W / 850
+            m_coord = [int(res_main["x"] * scale_m), int(res_main["y"] * scale_m)]
+            if st.session_state.lms[target_idx] != m_coord:
+                st.session_state.lms[target_idx] = m_coord
+                st.rerun()
+
+    # --- خروجی آنالیز کلینیکی ---
+    st.divider()
+    def get_a(p1, p2, p3):
+        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 1)
+    
+    sna = get_a(l[10], l[4], l[0])
+    snb = get_a(l[10], l[4], l[2])
+    c1, c2, c3 = st.columns(3)
+    c1.metric("SNA (Maxilla)", f"{sna}°")
+    c2.metric("SNB (Mandible)", f"{snb}°")
+    c3.metric("ANB (Class)", f"{round(sna-snb, 1)}°")
