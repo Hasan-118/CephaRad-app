@@ -8,7 +8,7 @@ import os
 import gdown
 from PIL import Image, ImageDraw
 
-# --- ۱. معماری استاندارد UNet (منطبق بر آموزش Untitled6) ---
+# --- ۱. معماری دقیق UNet (تطبیق لایه‌ها با مدل‌های آموزش دیده شما) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -47,17 +47,18 @@ class Up(nn.Module):
         return self.conv(x)
 
 class UNet(nn.Module):
-    def __init__(self, n_channels=1, n_classes=29):
+    def __init__(self, n_channels=1, n_classes=29, bilinear=True):
         super(UNet, self).__init__()
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
-        self.down4 = Down(512, 512)
-        self.up1 = Up(1024, 256)
-        self.up2 = Up(512, 128)
-        self.up3 = Up(256, 64)
-        self.up4 = Up(128, 64)
+        factor = 2 if bilinear else 1
+        self.down4 = Down(512, 1024 // factor)
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
         self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
 
     def forward(self, x):
@@ -72,94 +73,79 @@ class UNet(nn.Module):
         x = self.up4(x, x1)
         return self.outc(x)
 
-# --- ۲. بارگذاری انسامبل از درایو ---
+# --- ۲. بارگذاری و ترکیب مدل‌ها (Ensemble Logic) ---
 @st.cache_resource
-def load_all_models():
+def load_ensemble():
     device = torch.device('cpu')
-    os.makedirs('models', exist_ok=True)
     drive_ids = {
         'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
         'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
         'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
-    paths = {k: f"models/{k}.pth" for k in drive_ids}
-    models = {}
+    os.makedirs('models', exist_ok=True)
+    models = []
     for name, fid in drive_ids.items():
-        if not os.path.exists(paths[name]):
-            gdown.download(id=fid, output=paths[name], quiet=False)
+        path = f"models/{name}.pth"
+        if not os.path.exists(path):
+            gdown.download(id=fid, output=path, quiet=False)
+        
         m = UNet(n_channels=1, n_classes=29)
-        # استفاده از strict=False برای جلوگیری از خطای Runtime
-        m.load_state_dict(torch.load(paths[name], map_location=device), strict=False)
+        # بارگذاری وزن‌ها (مطمئن شوید bilinear در آموزش True بوده است)
+        state_dict = torch.load(path, map_location=device)
+        m.load_state_dict(state_dict, strict=False)
         m.eval()
-        models[name] = m
+        models.append(m)
     return models
 
-# --- ۳. پردازش و آنالیز Steiner ---
-def process_and_analyze(pred, original_size):
-    landmark_names = [
-        'Sella', 'Nasion', 'A-point', 'B-point', 'Pogonion', 'Menton', 'Gnathion', 
-        'Gonion', 'Orbitale', 'Porion', 'Condylion', 'Articulare', 'ANS', 'PNS',
-        'U1_Tip', 'L1_Tip', 'ST_Nasion', 'Nose_Tip', 'ST_Menton'
-    ]
-    w, h = original_size
-    sx, sy = w/512, h/512
-    pts = {}
+# --- ۳. استخراج مختصات بر اساس ماکزیمم هیت‌مپ ---
+def get_landmarks(models, image_tensor, original_size):
+    with torch.no_grad():
+        # Ensemble: جمع‌بندی خروجی مدل‌ها (Logits) و سپس میانگین‌گیری
+        all_outputs = [m(image_tensor) for m in models]
+        avg_output = torch.mean(torch.stack(all_outputs), dim=0)
+        
+        # اعمال Sigmoid برای نرمال‌سازی هیت‌مپ‌ها
+        avg_output = torch.sigmoid(avg_output)
     
-    for i in range(min(len(landmark_names), pred.shape[1])):
-        heatmap = torch.sigmoid(pred[0, i]).detach().numpy()
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-7)
-        heatmap[heatmap < 0.5] = 0
+    w_orig, h_orig = original_size
+    # مهم: مدل روی ۵۱۲ آموزش دیده، پس باید مختصات را به سایز اصلی مپ کنیم
+    scale_x, scale_y = w_orig / 512, h_orig / 512
+    
+    landmarks = []
+    output_np = avg_output[0].cpu().numpy() # [29, 512, 512]
+    
+    for i in range(29):
+        heatmap = output_np[i]
+        # پیدا کردن پیکسل با بیشترین مقدار (نقطه لندمارک)
         _, _, _, max_loc = cv2.minMaxLoc(heatmap)
-        pts[landmark_names[i]] = (int(max_loc[0]*sx), int(max_loc[1]*sy))
+        # تبدیل مختصات به سایز واقعی تصویر
+        landmarks.append((int(max_loc[0] * scale_x), int(max_loc[1] * scale_y)))
     
-    def get_angle(p1, p2, p3):
-        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        return np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)+1e-6), -1, 1)))
+    return landmarks
 
-    report = {}
-    try:
-        report['SNA'] = get_angle(pts['Sella'], pts['Nasion'], pts['A-point'])
-        report['SNB'] = get_angle(pts['Sella'], pts['Nasion'], pts['B-point'])
-        report['ANB'] = report['SNA'] - report['SNB']
-    except: pass
-    return pts, report
+# --- ۴. رابط کاربری (Streamlit) ---
+st.title("🦷 آنالیز دقیق CephRad Ensemble")
 
-# --- ۴. رابط کاربری (UI) ---
-st.set_page_config(page_title="CephRad AI", layout="centered")
-st.title("🦷 پنل هوشمند CephRad")
+uploaded_file = st.file_uploader("آپلود تصویر سفالومتری", type=['png', 'jpg', 'jpeg'])
 
-# رفع مشکل رگولار اکسپرشن با استایل ساده
-st.markdown("<style>.stMetric { background: #f0f2f6; padding: 10px; border-radius: 10px; }</style>", unsafe_allow_html=True)
-
-file = st.file_uploader("تصویر سفالومتری (PNG, JPG)", type=['png', 'jpg', 'jpeg'])
-
-if file:
-    img_pil = Image.open(file).convert('RGB')
-    st.image(img_pil, use_column_width=True)
-
-    if st.button("🚀 شروع آنالیز Ensemble"):
-        with st.spinner('در حال پردازش مدل‌های انسامبل...'):
-            models = load_all_models()
-            input_img = img_pil.convert('L').resize((512, 512))
-            tensor = torch.from_numpy(np.array(input_img)).float().unsqueeze(0).unsqueeze(0) / 255.0
+if uploaded_file:
+    img = Image.open(uploaded_file).convert('RGB')
+    w, h = img.size
+    
+    # پیش‌پردازش دقیق مطابق نوت‌بوک
+    img_gray = img.convert('L').resize((512, 512))
+    img_tensor = torch.from_numpy(np.array(img_gray)).float().unsqueeze(0).unsqueeze(0) / 255.0
+    
+    if st.button("🚀 اجرای انسامبل و نقطه‌گذاری"):
+        models = load_ensemble()
+        pts = get_landmarks(models, img_tensor, (w, h))
+        
+        # رسم نقاط روی تصویر اصلی
+        draw = ImageDraw.Draw(img)
+        for i, (px, py) in enumerate(pts):
+            # دایره کوچک برای لندمارک
+            draw.ellipse([px-10, py-10, px+10, py+10], fill='red', outline='white')
+            # شماره‌گذاری لندمارک برای چک کردن ترتیب
+            draw.text((px+12, py-12), str(i+1), fill='yellow')
             
-            with torch.no_grad():
-                # میانگین‌گیری از هر ۳ مدل
-                ensemble_pred = (models['general'](tensor) + models['specialist'](tensor) + models['tmj'](tensor)) / 3.0
-            
-            pts, results = process_and_analyze(ensemble_pred, img_pil.size)
-            
-            # رسم نقاط
-            draw = ImageDraw.Draw(img_pil)
-            for p in pts.values():
-                draw.ellipse((p[0]-12, p[1]-12, p[0]+12, p[1]+12), fill='red', outline='white', width=3)
-            
-            st.image(img_pil, caption="نتیجه نهایی آنالیز", use_column_width=True)
-
-            
-            
-            st.subheader("📊 نتایج کلینیکی")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("SNA", f"{results.get('SNA', 0):.1f}°")
-            c2.metric("SNB", f"{results.get('SNB', 0):.1f}°")
-            c3.metric("ANB", f"{results.get('ANB', 0):.1f}°")
+        st.image(img, caption="لندمارک‌های شناسایی شده (Ensemble)", use_column_width=True)
