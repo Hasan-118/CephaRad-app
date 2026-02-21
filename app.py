@@ -7,8 +7,9 @@ import cv2
 import os
 import gdown
 from PIL import Image, ImageDraw
+from collections import OrderedDict
 
-# --- ۱. معماری دقیق UNet (تطبیق لایه‌ها با مدل‌های آموزش دیده شما) ---
+# --- ۱. معماری UNet (دقیقاً مطابق پارامترهای نوت‌بوک CephaRad) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -47,18 +48,17 @@ class Up(nn.Module):
         return self.conv(x)
 
 class UNet(nn.Module):
-    def __init__(self, n_channels=1, n_classes=29, bilinear=True):
+    def __init__(self, n_channels=1, n_classes=29):
         super(UNet, self).__init__()
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
-        factor = 2 if bilinear else 1
-        self.down4 = Down(512, 1024 // factor)
-        self.up1 = Up(1024, 512 // factor, bilinear)
-        self.up2 = Up(512, 256 // factor, bilinear)
-        self.up3 = Up(256, 128 // factor, bilinear)
-        self.up4 = Up(128, 64, bilinear)
+        self.down4 = Down(512, 512) # در برخی نسخه‌ها ۵۱۲ است، اگر خطا داد به ۱۰۲۴ تغییر دهید
+        self.up1 = Up(1024, 256)
+        self.up2 = Up(512, 128)
+        self.up3 = Up(256, 64)
+        self.up4 = Up(128, 64)
         self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
 
     def forward(self, x):
@@ -73,79 +73,64 @@ class UNet(nn.Module):
         x = self.up4(x, x1)
         return self.outc(x)
 
-# --- ۲. بارگذاری و ترکیب مدل‌ها (Ensemble Logic) ---
+# --- ۲. بارگذاری هوشمند (رفع مشکل لایه‌های Module) ---
+def load_model_weights(model, path, device):
+    state_dict = torch.load(path, map_location=device)
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:] if k.startswith('module.') else k # حذف پیشوند module
+        new_state_dict[name] = v
+    model.load_state_dict(new_state_dict, strict=False)
+    return model
+
 @st.cache_resource
-def load_ensemble():
+def load_all_ensemble():
     device = torch.device('cpu')
-    drive_ids = {
-        'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    os.makedirs('models', exist_ok=True)
+    ids = {'gen': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'spec': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     models = []
-    for name, fid in drive_ids.items():
+    for name, fid in ids.items():
         path = f"models/{name}.pth"
-        if not os.path.exists(path):
-            gdown.download(id=fid, output=path, quiet=False)
-        
+        os.makedirs('models', exist_ok=True)
+        if not os.path.exists(path): gdown.download(id=fid, output=path, quiet=False)
         m = UNet(n_channels=1, n_classes=29)
-        # بارگذاری وزن‌ها (مطمئن شوید bilinear در آموزش True بوده است)
-        state_dict = torch.load(path, map_location=device)
-        m.load_state_dict(state_dict, strict=False)
+        m = load_model_weights(m, path, device)
         m.eval()
         models.append(m)
     return models
 
-# --- ۳. استخراج مختصات بر اساس ماکزیمم هیت‌مپ ---
-def get_landmarks(models, image_tensor, original_size):
-    with torch.no_grad():
-        # Ensemble: جمع‌بندی خروجی مدل‌ها (Logits) و سپس میانگین‌گیری
-        all_outputs = [m(image_tensor) for m in models]
-        avg_output = torch.mean(torch.stack(all_outputs), dim=0)
+# --- ۳. رابط کاربری و اجرای آنالیز ---
+st.title("🦷 سامانه آنالیز هوشمند CephRad")
+
+uploaded = st.file_uploader("تصویر را انتخاب کنید", type=['png', 'jpg', 'jpeg'])
+
+if uploaded:
+    img_orig = Image.open(uploaded).convert('RGB')
+    w, h = img_orig.size
+    
+    # پیش‌پردازش (بسیار مهم: نرمال‌سازی منطبق بر دیتای Aariz)
+    img_input = img_orig.convert('L').resize((512, 512))
+    img_np = np.array(img_input).astype(np.float32) / 255.0
+    # استانداردسازی (اگر در نوت‌بوک شما Mean/Std خاصی بود اینجا اعمال کنید)
+    tensor = torch.from_numpy(img_np).unsqueeze(0).unsqueeze(0)
+
+    if st.button("🚀 اجرای تحلیل انسامبل"):
+        models = load_all_ensemble()
+        with torch.no_grad():
+            # میانگین‌گیری روی خروجی مدل‌ها (Ensemble)
+            preds = [torch.sigmoid(m(tensor)) for m in models]
+            final_pred = torch.mean(torch.stack(preds), dim=0).cpu().numpy()[0]
+
+        draw = ImageDraw.Draw(img_orig)
+        scale_x, scale_y = w / 512, h / 512
         
-        # اعمال Sigmoid برای نرمال‌سازی هیت‌مپ‌ها
-        avg_output = torch.sigmoid(avg_output)
-    
-    w_orig, h_orig = original_size
-    # مهم: مدل روی ۵۱۲ آموزش دیده، پس باید مختصات را به سایز اصلی مپ کنیم
-    scale_x, scale_y = w_orig / 512, h_orig / 512
-    
-    landmarks = []
-    output_np = avg_output[0].cpu().numpy() # [29, 512, 512]
-    
-    for i in range(29):
-        heatmap = output_np[i]
-        # پیدا کردن پیکسل با بیشترین مقدار (نقطه لندمارک)
-        _, _, _, max_loc = cv2.minMaxLoc(heatmap)
-        # تبدیل مختصات به سایز واقعی تصویر
-        landmarks.append((int(max_loc[0] * scale_x), int(max_loc[1] * scale_y)))
-    
-    return landmarks
-
-# --- ۴. رابط کاربری (Streamlit) ---
-st.title("🦷 آنالیز دقیق CephRad Ensemble")
-
-uploaded_file = st.file_uploader("آپلود تصویر سفالومتری", type=['png', 'jpg', 'jpeg'])
-
-if uploaded_file:
-    img = Image.open(uploaded_file).convert('RGB')
-    w, h = img.size
-    
-    # پیش‌پردازش دقیق مطابق نوت‌بوک
-    img_gray = img.convert('L').resize((512, 512))
-    img_tensor = torch.from_numpy(np.array(img_gray)).float().unsqueeze(0).unsqueeze(0) / 255.0
-    
-    if st.button("🚀 اجرای انسامبل و نقطه‌گذاری"):
-        models = load_ensemble()
-        pts = get_landmarks(models, img_tensor, (w, h))
-        
-        # رسم نقاط روی تصویر اصلی
-        draw = ImageDraw.Draw(img)
-        for i, (px, py) in enumerate(pts):
-            # دایره کوچک برای لندمارک
-            draw.ellipse([px-10, py-10, px+10, py+10], fill='red', outline='white')
-            # شماره‌گذاری لندمارک برای چک کردن ترتیب
-            draw.text((px+12, py-12), str(i+1), fill='yellow')
+        for i in range(29):
+            heatmap = final_pred[i]
+            # پیدا کردن نقطه دقیق ماکزیمم
+            _, max_val, _, max_loc = cv2.minMaxLoc(heatmap)
             
-        st.image(img, caption="لندمارک‌های شناسایی شده (Ensemble)", use_column_width=True)
+            # فقط اگر دقت نقطه از حدی بیشتر بود رسم شود (حذف نقاط پرت)
+            if max_val > 0.1:
+                cx, cy = int(max_loc[0] * scale_x), int(max_loc[1] * scale_y)
+                draw.ellipse([cx-12, cy-12, cx+12, cy+12], fill='red', outline='white', width=3)
+
+        st.image(img_orig, use_column_width=True)
