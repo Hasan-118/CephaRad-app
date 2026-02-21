@@ -56,9 +56,9 @@ def load_all_models():
     
     # لطفا آیدی‌های واقعی فایل‌های خود را در اینجا قرار دهید
     drive_ids = {
-        'general': 'YOUR_FILE_ID_1', 
-        'specialist': 'YOUR_FILE_ID_2',
-        'tmj': 'YOUR_FILE_ID_3'
+        'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+        'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
     
     paths = {
@@ -154,3 +154,4 @@ if uploaded_file:
         c1.metric("SNA", f"{res.get('SNA', 0):.1f}°")
         c2.metric("SNB", f"{res.get('SNB', 0):.1f}°")
         c3.metric("ANB", f"{res.get('ANB', 0):.1f}°")
+
