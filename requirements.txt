@@ -2,5 +2,8 @@ torch
 torchvision
 streamlit
 streamlit-image-coordinates
+gdown
 Pillow
 numpy
+pandas
+plotly
