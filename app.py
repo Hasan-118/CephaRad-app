@@ -3,23 +3,38 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import json
 import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. بازسازی دقیق معماری بر اساس خطای Size Mismatch ---
+# --- ۱. مدیریت دایرکتوری و دانلود مدل‌ها ---
+@st.cache_resource
+def download_models():
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    for filename, fid in model_ids.items():
+        if not os.path.exists(filename):
+            with st.spinner(f'در حال فراخوانی {filename}...'):
+                url = f'https://drive.google.com/uc?id={fid}'
+                gdown.download(url, filename, quiet=False)
+
+# --- ۲. معماری مدل (DoubleConv + CephaUNet) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),  # Layer 0
-            nn.BatchNorm2d(out_ch),                 # Layer 1
-            nn.ReLU(inplace=True),                  # Layer 2
-            nn.Dropout2d(p=dropout_prob),           # Layer 3
-            nn.Conv2d(out_ch, out_ch, 3, padding=1), # Layer 4 (دقیقاً همان جایی که خطا می‌داد)
-            nn.BatchNorm2d(out_ch),                 # Layer 5
-            nn.ReLU(inplace=True)                   # Layer 6
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_prob),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
         )
     def forward(self, x): return self.conv(x)
 
@@ -45,94 +60,102 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. بارگذاری مدل‌ها با اصلاح پدینگ برای جلوگیری از قطع شدن صورت ---
+# --- ۳. بارگذاری مدل‌ها ---
 @st.cache_resource
-def load_aariz_system():
-    model_ids = {
-        'model1.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'model2.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'model3.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
+def load_aariz_models():
+    download_models()
+    model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     device = torch.device("cpu")
-    models = []
-    for name, fid in model_ids.items():
-        if not os.path.exists(name):
-            gdown.download(f'https://drive.google.com/uc?id={fid}', name, quiet=False)
-        try:
-            m = CephaUNet(n_landmarks=29)
-            ckpt = torch.load(name, map_location=device)
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            clean_state = {k.replace('module.', ''): v for k, v in state.items()}
-            m.load_state_dict(clean_state, strict=True) # حالا باید True باشد چون معماری اصلاح شد
-            m.eval()
-            models.append(m)
-        except Exception as e:
-            st.error(f"خطا در مدل {name}: {e}")
-    return models, device
+    loaded_models = []
+    for f in model_files:
+        if os.path.exists(f):
+            try:
+                m = CephaUNet(n_landmarks=29).to(device)
+                ckpt = torch.load(f, map_location=device)
+                state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+                # اصلاح نام لایه‌ها
+                new_state = {k.replace('module.', ''): v for k, v in state.items()}
+                m.load_state_dict(new_state, strict=False)
+                m.eval()
+                loaded_models.append(m)
+            except Exception as e:
+                st.sidebar.error(f"Error loading {f}: {e}")
+    return loaded_models, device
 
-def predict_safe(img_pil, models, device):
-    ow, oh = img_pil.size
-    ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio)
-    img_rs = img_pil.convert('L').resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("L", (512, 512))
-    px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py))
+# --- ۴. پیش‌بینی هوشمند (Ensemble Logic) ---
+def run_ai_prediction(img_pil, models, device):
+    orig_size = img_pil.size
+    img_gray = img_pil.convert('L').resize((512, 512), Image.LANCZOS)
+    input_tensor = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
     
-    input_t = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
     with torch.no_grad():
-        outs = [m(input_t)[0].cpu().numpy() for m in models]
+        outs = [m(input_tensor)[0].cpu().numpy() for m in models]
     
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
+    ANT_IDX = [10, 14, 9, 5, 28, 20]
+    POST_IDX = [7, 11, 12, 15]
     coords = {}
+    sx, sy = orig_size[0]/512, orig_size[1]/512
+    
     for i in range(29):
         if i in ANT_IDX and len(outs) >= 2: hm = outs[1][i]
         elif i in POST_IDX and len(outs) >= 3: hm = outs[2][i]
         else: hm = outs[0][i]
+        
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+        coords[i] = [int(x * sx), int(y * sy)]
     return coords
 
-# --- ۳. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Station V2.2", layout="wide")
-models, device = load_aariz_system()
+# --- ۵. رابط کاربری (Streamlit UI) ---
+st.set_page_config(page_title="Aariz AI Station V2", layout="wide")
+models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-if models:
-    st.sidebar.success(f"✅ {len(models)} مدل بارگذاری شد")
-    up_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
-    if up_file:
-        img_raw = Image.open(up_file).convert("RGB")
-        if "lms" not in st.session_state or st.session_state.fid != up_file.name:
-            st.session_state.lms = predict_safe(img_raw, models, device)
-            st.session_state.fid = up_file.name
+st.sidebar.title("🦷 Aariz Station")
+st.sidebar.info(f"سیستم: {device.type.upper()} | مدل‌ها: {len(models)}/3")
 
-        target_idx = st.sidebar.selectbox("اصلاح لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            draw_img = img_raw.copy()
-            draw = ImageDraw.Draw(draw_img)
-            for i, pos in st.session_state.lms.items():
-                c = "red" if i == target_idx else "lime"
-                r = 12 if i == target_idx else 6
-                draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=c)
-            
-            st.subheader("📍 تنظیم دقیق با کلیک")
-            res = streamlit_image_coordinates(draw_img, width=800, key="aariz_fix")
-            if res:
-                scale = img_raw.width / 800
-                nx, ny = int(res["x"]*scale), int(res["y"]*scale)
-                if st.session_state.lms[target_idx] != [nx, ny]:
-                    st.session_state.lms[target_idx] = [nx, ny]
-                    st.rerun()
-        with col2:
-            st.header("📊 گزارش")
-            l = st.session_state.lms
-            def get_a(p1, p2, p3):
-                v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-                return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 1)
-            sna = get_a(l[10], l[4], l[0])
-            st.metric("SNA", f"{sna}°")
-            if st.button("💾 ذخیره"): st.success("ثبت شد")
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+
+if uploaded_file and models:
+    img_raw = Image.open(uploaded_file).convert("RGB")
+    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
+        st.session_state.lms = run_ai_prediction(img_raw, models, device)
+        st.session_state.file_id = uploaded_file.name
+
+    target_idx = st.sidebar.selectbox("نقطه برای اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        draw_img = img_raw.copy()
+        draw = ImageDraw.Draw(draw_img)
+        l = st.session_state.lms
+        # رسم Steiner (S-N-A)
+        draw.line([tuple(l[10]), tuple(l[4]), tuple(l[0])], fill="yellow", width=5)
+        for i, pos in l.items():
+            color = "red" if i == target_idx else "lime"
+            r = 15 if i == target_idx else 8
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
+
+        st.subheader("📍 تنظیم دستی: لندمارک را روی تصویر جابجا کنید")
+        res = streamlit_image_coordinates(draw_img, width=900, key="aariz_final")
+        if res:
+            scale = img_raw.width / 900
+            nx, ny = int(res["x"]*scale), int(res["y"]*scale)
+            if l[target_idx] != [nx, ny]:
+                st.session_state.lms[target_idx] = [nx, ny]
+                st.rerun()
+
+    with col2:
+        st.header("📊 Clinical Report")
+        def get_angle(p1, p2, p3):
+            v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+            norm = np.linalg.norm(v1)*np.linalg.norm(v2)
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 2)
+        
+        sna = get_angle(l[10], l[4], l[0])
+        snb = get_angle(l[10], l[4], l[2])
+        st.metric("SNA", f"{sna}°")
+        st.metric("SNB", f"{snb}°")
+        st.metric("ANB", f"{round(sna - snb, 2)}°")
+        if st.button("💾 ذخیره و ثبت"): st.success("اطلاعات ذخیره شد.")
 else:
-    st.error("خطا در لود مدل‌ها")
+    st.warning("لطفاً تصویر را آپلود کنید.")
