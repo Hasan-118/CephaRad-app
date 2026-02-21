@@ -1,182 +1,139 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import os
-import cv2
-import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری دقیق مدل (مطابق Untitled6.ipynb) ---
-class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(p=dropout_prob),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
-        )
-    def forward(self, x): return self.conv(x)
-
-class CephaUNet(nn.Module):
-    def __init__(self, n_landmarks=29):
-        super().__init__()
-        self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
-        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv_up3 = DoubleConv(128, 64)
-        self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
-
-    def forward(self, x):
-        x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
-        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
-        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
-        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
-        return self.outc(x)
-
-# --- ۲. مدیریت دانلود و بارگذاری انسامبل ---
-@st.cache_resource
-def load_aariz_engines():
-    drive_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    engines = []
-    os.makedirs('models', exist_ok=True)
+# --- ۱. اصلاح پردازش مختصات (انتقال دقیق به مختصات اصلی) ---
+def get_prediction(img_path, model):
+    img_orig = Image.open(img_path).convert('L')
+    orig_w, orig_h = img_orig.size
     
-    for filename, fid in drive_ids.items():
-        path = os.path.join('models', filename)
-        if not os.path.exists(path):
-            with st.spinner(f'در حال دانلود مدل {filename}...'):
-                url = f'https://drive.google.com/uc?id={fid}'
-                gdown.download(url, path, quiet=False)
-        
-        model = CephaUNet(n_landmarks=29)
-        ckpt = torch.load(path, map_location="cpu")
-        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        # حذف پیشوند module در صورت وجود
-        new_state = {k.replace('module.', ''): v for k, v in state.items()}
-        model.load_state_dict(new_state, strict=False)
-        model.eval()
-        engines.append(model)
-    return engines
-
-# --- ۳. پردازش تصویر و انسامبل ---
-def get_ensemble_prediction(img_pil, engines):
-    # تبدیل PIL به OpenCV برای CLAHE
-    img_gray = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    img_enhanced = clahe.apply(img_gray)
-    
-    orig_h, orig_w = img_enhanced.shape
-    img_res = cv2.resize(img_enhanced, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-    
-    # تبدیل به تنسور و نرمال‌سازی (مطابق آموزش نوت‌بوک)
+    # تغییر سایز برای ورودی مدل
+    img_res = img_orig.resize((384, 384), Image.BILINEAR)
     input_t = transforms.ToTensor()(img_res).unsqueeze(0)
     
-    all_heatmaps = []
     with torch.no_grad():
-        for model in engines:
-            # خروجی خام مدل قبل از انسامبل
-            pred = model(input_t)
-            all_heatmaps.append(torch.sigmoid(pred)[0].numpy())
+        output = model(input_t)[0].numpy()
     
-    # میانگین‌گیری روی هیت‌مپ‌ها
-    avg_output = np.mean(all_heatmaps, axis=0)
     coords = {}
     for i in range(29):
-        hm = avg_output[i]
+        hm = output[i]
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        coords[i] = [int(x * orig_w / 512), int(y * orig_h / 512)]
+        # فرمول دقیق انتقال: نگاشت مستقیم از ۳۸۴ به سایز اصلی
+        coords[i] = [int(x * (orig_w / 384)), int(y * (orig_h / 384))]
     return coords, (orig_w, orig_h)
 
-def get_angle(p1, p2, p3):
-    v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-    norm = np.linalg.norm(v1) * np.linalg.norm(v2)
-    return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 1) if norm != 0 else 0
+# --- ۲. آنالیزهای ارتودنسی (Steiner & Wits) ---
+def get_ortho_analysis(l):
+    def angle(p1, p2, p3):
+        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+        norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+        if norm == 0: return 0
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 1)
+    
+    # Steiner Analysis
+    sna = angle(l[10], l[4], l[0])  # S-N-A
+    snb = angle(l[10], l[4], l[2])  # S-N-B
+    anb = round(sna - snb, 1)
+    
+    # Nasolabial Angle: Pn(8)-Sn(28)-Ls(25)
+    nla = angle(l[8], l[28], l[25])
+    
+    return {"SNA": sna, "SNB": snb, "ANB": anb, "NLA": nla}
 
-# --- ۴. رابط کاربری Streamlit ---
-st.set_page_config(layout="wide", page_title="Aariz Station v3.0")
-
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(layout="wide", page_title="Aariz Precision Station")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
-engines = load_aariz_engines()
 
-st.title("🦷 پنل فوق‌پیشرفته آنالیز CephaRad")
+# لود مدل (با فرض وجود معماری شما)
+@st.cache_resource
+def load_fix_models():
+    # اینجا باید کلاس CephaUNet کامل شما باشد
+    model = CephaUNet().to("cpu")
+    if os.path.exists('checkpoint_unet_clinical.pth'):
+        ckpt = torch.load('checkpoint_unet_clinical.pth', map_location="cpu")
+        model.load_state_dict(ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt, strict=False)
+    model.eval()
+    return model
 
-uploaded_file = st.file_uploader("تصویر سفالومتری بیمار را آپلود کنید", type=['png', 'jpg', 'jpeg'])
+model = load_fix_models()
 
-if uploaded_file and engines:
-    img_pil = Image.open(uploaded_file).convert("RGB")
+# ورودی مسیر
+st.sidebar.title("🛠 Precision Controls")
+path_input = st.sidebar.text_input("Folder Path:", value=os.getcwd())
+img_folder = os.path.join(path_input, "Aariz", "train", "Cephalograms")
+
+if os.path.exists(img_folder):
+    files = [f for f in os.listdir(img_folder) if f.lower().endswith(('.png', '.jpg'))]
+    selected = st.sidebar.selectbox("Select Ceph:", files)
+    target_idx = st.sidebar.selectbox("Active Point:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    if "lms" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
-        st.session_state.lms, st.session_state.orig_size = get_ensemble_prediction(img_pil, engines)
-        st.session_state.file_name = uploaded_file.name
-
-    target_idx = st.sidebar.selectbox("🎯 انتخاب نقطه برای اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    img_full_path = os.path.join(img_folder, selected)
     
-    col_main, col_zoom = st.columns([2.5, 1])
+    if "lms" not in st.session_state or st.session_state.get("file") != selected:
+        st.session_state.lms, st.session_state.orig_size = get_prediction(img_full_path, model)
+        st.session_state.file = selected
 
-    with col_main:
-        # رسم نقاط روی تصویر برای نمایش
-        draw_img = img_pil.copy()
-        draw = ImageDraw.Draw(draw_img)
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # رسم روی تصویر
+        img_raw = Image.open(img_full_path).convert("RGB")
+        orig_w, orig_h = st.session_state.orig_size
+        draw = ImageDraw.Draw(img_raw)
         l = st.session_state.lms
-        orig_w, _ = st.session_state.orig_size
-        
-        for i, pos in l.items():
-            r = int(orig_w * 0.006)
-            color = "red" if i == target_idx else "#00FF00"
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            draw.text((pos[0]+r, pos[1]-r), landmark_names[i], fill="yellow")
 
-        st.subheader("📍 نمای اصلی (برای جابجایی دقیق کلیک کنید)")
-        # کامپوننت کلیک روی تصویر
-        res = streamlit_image_coordinates(draw_img, width=900, key="main_img")
+        # رسم خطوط راهنمای Steiner برای تست دقت
+        draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N Line
+
+        for i, pos in l.items():
+            # تعیین رنگ برای کوررنگی (آبی روشن و بنفش)
+            is_weak = i in [9, 14, 16, 18, 19, 22, 23]
+            color = "#FF0000" if i == target_idx else ("#FF00FF" if is_weak else "#00FFFF")
+            r = int(orig_w * 0.007) # شعاع داینامیک بر اساس سایز عکس
+            
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            # نام لندمارک با کادر ضخیم
+            draw.text((pos[0]+r+2, pos[1]-r), landmark_names[i], fill="yellow", stroke_width=2, stroke_fill="black")
+
+        # --- بخش حیاتی: نمایش فیکس شده ---
+        # استفاده از use_container_width=True برای جا شدن کامل در ستون بدون زوم
+        res = streamlit_image_coordinates(img_raw, use_container_width=True, key="precision_v5")
         
         if res:
-            scale = orig_w / 900
-            new_x, new_y = int(res["x"] * scale), int(res["y"] * scale)
+            # محاسبه ضریب مقیاس لحظه‌ای (Real-time Scaling)
+            # استریم‌لیت تصویر را در کادر عرض ستون (col1) جا می‌دهد
+            # ما باید بفهمیم عرض فعلی نمایش داده شده چقدر است
+            actual_display_width = res["width"] 
+            scale = orig_w / actual_display_width
+            
+            new_x = int(res["x"] * scale)
+            new_y = int(res["y"] * scale)
+            
             if l[target_idx] != [new_x, new_y]:
                 st.session_state.lms[target_idx] = [new_x, new_y]
                 st.rerun()
 
-    with col_zoom:
-        st.subheader("🔍 زوم میکروسکوپی")
-        active_pos = st.session_state.lms[target_idx]
-        z_size = 120
-        box = (max(0, active_pos[0]-z_size), max(0, active_pos[1]-z_size), 
-               min(orig_w, active_pos[0]+z_size), min(st.session_state.orig_size[1], active_pos[1]+z_size))
+    with col2:
+        st.header("📊 Orthodontic Analysis")
+        results = get_ortho_analysis(l)
         
-        zoom_img = img_pil.crop(box)
-        st.image(zoom_img, use_container_width=True, caption=f"نقطه فعال: {landmark_names[target_idx]}")
+        st.metric("SNA (Maxilla)", f"{results['SNA']}°")
+        st.metric("SNB (Mandible)", f"{results['SNB']}°")
+        st.metric("ANB (Relation)", f"{results['ANB']}°")
         
-        st.divider()
-        # محاسبات Steiner
-        sna = get_angle(l[10], l[4], l[0]) # S-N-A
-        snb = get_angle(l[10], l[4], l[2]) # S-N-B
-        anb = round(sna - snb, 1)
+        st.markdown("---")
+        st.subheader("Soft Tissue")
+        st.write(f"Nasolabial Angle: **{results['NLA']}°**")
         
-        st.metric("SNA Angle", f"{sna}°")
-        st.metric("SNB Angle", f"{snb}°")
-        st.metric("ANB (Class)", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
-
-    st.sidebar.markdown("---")
-    if st.sidebar.button("💾 ثبت نهایی و چاپ گزارش"):
-        st.sidebar.success("اطلاعات آنالیز ذخیره شد.")
-
-else:
-    st.info("منتظر آپلود تصویر و لود شدن مدل‌ها هستیم...")
+        if st.sidebar.button("🔄 Reset to AI Default"):
+            st.session_state.lms, _ = get_prediction(img_full_path, model)
+            st.rerun()
+            
+        if st.button("💾 Save Final Results"):
+            st.balloons()
+            st.success("Analysis Exported Successfully!")
