@@ -93,7 +93,7 @@ def load_all_models():
     os.makedirs('models', exist_ok=True)
     
     # آیدی‌های خود را جایگزین کنید (از حافظه برای دانلود استفاده می‌شود)
-    drive_ids = {'general': 'ID_1', 'specialist': 'ID_2', 'tmj': 'ID_3'}
+    drive_ids = {'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     paths = {'general': 'models/mod1.pth', 'specialist': 'models/mod2.pth', 'tmj': 'models/mod3.pth'}
     
     models = {}
@@ -157,3 +157,4 @@ if file:
         c1, c2 = st.columns(2)
         c1.metric("SNA", f"{analysis.get('SNA', 0):.1f}°")
         c2.metric("SNB", f"{analysis.get('SNB', 0):.1f}°")
+
