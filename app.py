@@ -9,7 +9,7 @@ import os
 import gdown
 from PIL import Image, ImageDraw
 
-# --- ۱. معماری دقیق UNet مطابق با فایل Untitled6.ipynb ---
+# --- ۱. معماری UNet (منطبق بر Untitled6.ipynb) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels, mid_channels=None):
         super().__init__()
@@ -57,10 +57,6 @@ class OutConv(nn.Module):
 class UNet(nn.Module):
     def __init__(self, n_channels=1, n_classes=29, bilinear=False):
         super(UNet, self).__init__()
-        self.n_channels = n_channels
-        self.n_classes = n_classes
-        self.bilinear = bilinear
-
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
@@ -83,43 +79,52 @@ class UNet(nn.Module):
         x = self.up2(x, x3)
         x = self.up3(x, x2)
         x = self.up4(x, x1)
-        logits = self.outc(x)
-        return logits
+        return self.outc(x)
 
-# --- ۲. بارگذاری Ensemble از Google Drive ---
+# --- ۲. بارگذاری هوشمند Ensemble از درایو ---
 @st.cache_resource
 def load_all_models():
     device = torch.device('cpu')
     os.makedirs('models', exist_ok=True)
     
-    # آیدی‌های خود را جایگزین کنید (از حافظه برای دانلود استفاده می‌شود)
-    drive_ids = {'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    drive_ids = {
+        'general': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     paths = {'general': 'models/mod1.pth', 'specialist': 'models/mod2.pth', 'tmj': 'models/mod3.pth'}
     
-    models = {}
+    loaded_models = {}
     for name, f_id in drive_ids.items():
         if not os.path.exists(paths[name]):
-            gdown.download(f'https://drive.google.com/uc?id={f_id}', paths[name], quiet=False)
-        model = UNet(n_channels=1, n_classes=29)
-        model.load_state_dict(torch.load(paths[name], map_location=device))
-        model.eval()
-        models[name] = model
-    return models, device
+            with st.spinner(f'در حال دانلود مدل {name}...'):
+                # استفاده از fuzzy برای اطمینان از دانلود درست
+                gdown.download(id=f_id, output=paths[name], quiet=False)
+        
+        if os.path.exists(paths[name]):
+            model = UNet(n_channels=1, n_classes=29)
+            model.load_state_dict(torch.load(paths[name], map_location=device))
+            model.eval()
+            loaded_models[name] = model
+        else:
+            st.error(f"مدل {name} یافت نشد. لطفا دسترسی لینک درایو را چک کنید.")
+            
+    return loaded_models, device
 
-# --- ۳. پردازش تصویر و آنالیزهای کلینیکی ---
-def process_data(final_output, original_size, pixel_size):
-    names = ['Sella', 'Nasion', 'A-point', 'B-point', 'Pogonion', 'Menton', 'Gnathion', 
-             'Gonion', 'Orbitale', 'Porion', 'Condylion', 'Articulare', 'ANS', 'PNS',
-             'U1_Tip', 'L1_Tip', 'ST_Nasion', 'Nose_Tip', 'ST_Menton'] # تا ۲۹ مورد
+# --- ۳. آنالیز و پس‌پردازش ---
+def process_cephalometric(output, original_size):
+    landmark_names = ['Sella', 'Nasion', 'A-point', 'B-point', 'Pogonion', 'Menton', 'Gnathion', 
+                     'Gonion', 'Orbitale', 'Porion', 'Condylion', 'Articulare', 'ANS', 'PNS',
+                     'U1_Tip', 'L1_Tip', 'ST_Nasion', 'Nose_Tip', 'ST_Menton'] # و غیره تا ۲۹ مورد
     
     w_orig, h_orig = original_size
     scale_x, scale_y = w_orig / 512, h_orig / 512
     
     pts = {}
-    for i in range(min(len(names), final_output.shape[1])):
-        heatmap = final_output[0, i].detach().numpy()
+    for i in range(min(len(landmark_names), output.shape[1])):
+        heatmap = output[0, i].detach().numpy()
         _, _, _, max_loc = cv2.minMaxLoc(heatmap)
-        pts[names[i]] = (int(max_loc[0] * scale_x), int(max_loc[1] * scale_y))
+        pts[landmark_names[i]] = (int(max_loc[0] * scale_x), int(max_loc[1] * scale_y))
     
     def get_angle(p1, p2, p3):
         v1, v2 = np.array(p1) - np.array(p2), np.array(p3) - np.array(p2)
@@ -127,34 +132,53 @@ def process_data(final_output, original_size, pixel_size):
         return np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
 
     report = {}
-    if all(k in pts for k in ['Sella', 'Nasion', 'A-point']): report['SNA'] = get_angle(pts['Sella'], pts['Nasion'], pts['A-point'])
-    if all(k in pts for k in ['Sella', 'Nasion', 'B-point']): report['SNB'] = get_angle(pts['Sella'], pts['Nasion'], pts['B-point'])
+    if all(k in pts for k in ['Sella', 'Nasion', 'A-point']):
+        report['SNA'] = get_angle(pts['Sella'], pts['Nasion'], pts['A-point'])
+    if all(k in pts for k in ['Sella', 'Nasion', 'B-point']):
+        report['SNB'] = get_angle(pts['Sella'], pts['Nasion'], pts['B-point'])
+    if 'SNA' in report and 'SNB' in report:
+        report['ANB'] = report['SNA'] - report['SNB']
+    
     return pts, report
 
-# --- ۴. اجرای Streamlit UI ---
+# --- ۴. رابط کاربری (UI) ---
 st.set_page_config(page_title="CephRad AI", layout="centered")
-st.title("🦷 آنالیز تخصصی CephRad")
+st.title("🦷 سامانه آنالیز هوشمند CephRad")
 
-file = st.file_uploader("آپلود تصویر سفالومتری", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.file_uploader("تصویر لترال سفالوگرام را انتخاب کنید", type=['png', 'jpg', 'jpeg'])
 
-if file:
-    img_orig = Image.open(file).convert('RGB')
-    st.image(img_orig, use_column_width=True)
+if uploaded_file:
+    img_orig = Image.open(uploaded_file).convert('RGB')
+    st.image(img_orig, caption="تصویر اصلی ورودی", use_column_width=True)
 
-    if st.button("🚀 شروع آنالیز Ensemble"):
-        models, device = load_all_models()
-        tensor_in = torch.from_numpy(np.array(img_orig.convert('L').resize((512, 512)))).float().unsqueeze(0).unsqueeze(0) / 255.0
+    if st.button("🚀 اجرای آنالیز سه مرحله‌ای (Ensemble)"):
+        models_dict, device = load_all_models()
         
-        with torch.no_grad():
-            output = (models['general'](tensor_in) + models['specialist'](tensor_in) + models['tmj'](tensor_in)) / 3.0
+        if len(models_dict) == 3:
+            # پیش‌پردازش
+            input_tensor = torch.from_numpy(np.array(img_orig.convert('L').resize((512, 512)))).float().unsqueeze(0).unsqueeze(0) / 255.0
             
-        pts, analysis = process_data(output, img_orig.size, 0.1)
-        
-        draw = ImageDraw.Draw(img_orig)
-        for p in pts.values(): draw.ellipse((p[0]-12, p[1]-12, p[0]+12, p[1]+12), fill='red', outline='white')
-        st.image(img_orig, caption="نقطه‌گذاری نهایی اصلاح شده", use_column_width=True)
-        
-        c1, c2 = st.columns(2)
-        c1.metric("SNA", f"{analysis.get('SNA', 0):.1f}°")
-        c2.metric("SNB", f"{analysis.get('SNB', 0):.1f}°")
-
+            with torch.no_grad():
+                # میانگین‌گیری انسامبل (هر ۳ مدل)
+                pred = (models_dict['general'](input_tensor) + 
+                        models_dict['specialist'](input_tensor) + 
+                        models_dict['tmj'](input_tensor)) / 3.0
+            
+            pts, analysis = process_cephalometric(pred, img_orig.size)
+            
+            # ترسیم نقاط
+            draw = ImageDraw.Draw(img_orig)
+            for name, p in pts.items():
+                draw.ellipse((p[0]-12, p[1]-12, p[0]+12, p[1]+12), fill='red', outline='white', width=3)
+            
+            st.image(img_orig, caption="آنالیز لندمارک‌های استخراج شده", use_column_width=True)
+            
+            # نمایش کارت‌های نتایج
+            
+            st.subheader("📊 گزارش آنالیز نهایی")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("SNA", f"{analysis.get('SNA', 0):.1f}°")
+            c2.metric("SNB", f"{analysis.get('SNB', 0):.1f}°")
+            c3.metric("ANB", f"{analysis.get('ANB', 0):.1f}°")
+        else:
+            st.warning("برخی از مدل‌ها به درستی بارگذاری نشدند. لطفاً ارتباط اینترنت یا دسترسی گوگل درایو را بررسی کنید.")
