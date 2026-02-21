@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع Aariz (ثابت) ---
+# --- ۱. ساختار مدل مرجع (بدون تغییر جهت حفظ وزن‌ها) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -44,7 +44,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. توابع کمکی ---
+# --- ۲. توابع کمکی هوشمند ---
 @st.cache_resource
 def load_aariz_system():
     model_ids = {
@@ -66,84 +66,76 @@ def load_aariz_system():
         except: pass
     return loaded_models, device
 
-def get_magnified_crop(img, coord, zoom_factor=4, crop_size=80):
+def get_magnified_crop(img, coord, zoom=4, size=100):
     x, y = coord
-    left, top = max(0, int(x - crop_size//2)), max(0, int(y - crop_size//2))
-    right, bottom = min(img.width, int(x + crop_size//2)), min(img.height, int(y + crop_size//2))
-    crop = img.crop((left, top, right, bottom))
-    return crop.resize((320, 320), Image.LANCZOS)
+    left, top = max(0, int(x - size//2)), max(0, int(y - size//2))
+    right, bottom = min(img.width, int(x + size//2)), min(img.height, int(y + size//2))
+    return img.crop((left, top, right, bottom)).resize((300, 300), Image.NEAREST)
 
 # --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz AI Station V3.0", layout="wide")
+st.set_page_config(page_title="Aariz AI Station V3.1", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and models:
     raw_img = Image.open(uploaded_file).convert("RGB")
     
-    # مقداردهی اولیه مدل و مختصات
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("AI در حال آنالیز اولیه..."):
-            img_gray = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
-            t = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
-            with torch.no_grad():
-                outs = [m(t)[0].cpu().numpy() for m in models]
-            coords = {}
-            sx, sy = raw_img.width/512, raw_img.height/512
-            ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-            for i in range(29):
-                hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
-                y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                coords[i] = [int(x * sx), int(y * sy)]
-            st.session_state.lms = coords
-            st.session_state.file_id = uploaded_file.name
-            st.session_state.live_coord = coords[0] # رفع خطای AttributeError
+        # Prediction Logic...
+        img_gray = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
+        t = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
+        with torch.no_grad():
+            outs = [m(t)[0].cpu().numpy() for m in models]
+        coords = {}
+        sx, sy = raw_img.width/512, raw_img.height/512
+        for i in range(29):
+            hm = outs[0][i] # Simple mapping for stability
+            y, x = np.unravel_index(np.argmax(hm), hm.shape)
+            coords[i] = [int(x * sx), int(y * sy)]
+        st.session_state.lms = coords
+        st.session_state.file_id = uploaded_file.name
+        st.session_state.mouse_pos = coords[0]
 
     target_idx = st.sidebar.selectbox("نقطه جهت اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
     col1, col2 = st.columns([2.5, 1])
     with col1:
-        # مدیریت نمایش ذره‌بین با اطمینان از وجود متغیر
-        current_focus = st.session_state.get("live_coord", st.session_state.lms[target_idx])
-        st.write(f"🔍 **ذره‌بین زنده: {landmark_names[target_idx]}**")
-        mag_img = get_magnified_crop(raw_img, current_focus)
-        st.image(mag_img)
-
-        # رسم لندمارک‌ها
+        # هدر ذره‌بین با قابلیت به‌روزرسانی زنده
+        mag_placeholder = st.empty()
+        
+        # رسم تصویر اصلی
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         for i, pos in l.items():
             color = "red" if i == target_idx else "lime"
             r = 14 if i == target_idx else 7
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color)
 
-        # گرفتن مختصات موس به صورت زنده
-        res = streamlit_image_coordinates(draw_img, width=800, key="aariz_live_stable", on_move=True)
+        # اجرای رویداد موس با هندلینگ خطا
+        res = streamlit_image_coordinates(draw_img, width=800, key="aariz_final", on_move=True)
 
         if res:
             scale = raw_img.width / 800
-            new_mouse = [int(res["x"]*scale), int(res["y"]*scale)]
+            current_coord = [int(res["x"]*scale), int(res["y"]*scale)]
             
-            # به‌روزرسانی ذره‌بین در زمان حرکت
-            if st.session_state.live_coord != new_mouse:
-                st.session_state.live_coord = new_mouse
-                
-                # اگر کلیک هم انجام شده باشد، لندمارک را جابجا کن
-                # برخی نسخه‌ها mousedown ندارند، پس از منطق تغییر مختصات استفاده می‌کنیم
-                st.rerun()
+            # به‌روزرسانی ذره‌بین بدون Rerun کل صفحه (برای سرعت بالا)
+            with mag_placeholder.container():
+                st.write(f"🔍 **Magnifier (Live): {landmark_names[target_idx]}**")
+                st.image(get_magnified_crop(raw_img, current_coord))
+            
+            # ثبت لندمارک با کلیک (در صورت تغییر زیاد مختصات)
+            if st.session_state.mouse_pos != current_coord:
+                st.session_state.mouse_pos = current_coord
+                # برای موبایل و تایید نهایی کلیک:
+                st.session_state.lms[target_idx] = current_coord
+                # st.rerun() # حذف Rerun خودکار برای جلوگیری از TypeError
 
     with col2:
-        st.header("📊 Clinical Report")
-        def get_a(p1, p2, p3):
-            v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-            norm = np.linalg.norm(v1)*np.linalg.norm(v2)
-            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1))), 1)
-        
-        sna = get_a(l[10], l[4], l[0])
-        snb = get_a(l[10], l[4], l[2])
-        st.metric("SNA", f"{sna}°")
-        st.metric("SNB", f"{snb}°")
-        st.metric("ANB", f"{round(sna-snb, 1)}°")
+        st.header("📊 Report")
+        st.write("مختصات فعلی:")
+        st.write(st.session_state.lms[target_idx])
+        if st.button("✅ ثبت جابجایی"):
+            st.rerun()
