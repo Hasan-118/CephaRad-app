@@ -8,17 +8,14 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع ---
+# --- ۱. ساختار مدل مرجع (تطبیق ۱۰۰٪) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(p=dropout_prob),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True), nn.Dropout2d(p=dropout_prob),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
     def forward(self, x): return self.conv(x)
@@ -44,7 +41,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر سیستم و مگنیفایر دقیق ---
+# --- ۲. لودر و توابع ایمن ---
 @st.cache_resource
 def load_aariz_system():
     model_ids = {
@@ -66,38 +63,47 @@ def load_aariz_system():
         except: pass
     return loaded_models, device
 
-def get_precision_magnifier(img, coord, size=100):
+def get_safe_magnifier(img, coord, size=120):
+    w, h = img.size
     x, y = coord
-    left, top = max(0, int(x - size//2)), max(0, int(y - size//2))
-    right, bottom = min(img.width, int(x + size//2)), min(img.height, int(y + size//2))
-    crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.LANCZOS)
+    # جلوگیری از خروج پنجره از کادر تصویر (Anti-ValueError)
+    left = max(0, min(x - size//2, w - size))
+    top = max(0, min(y - size//2, h - size))
+    right = left + size
+    bottom = top + size
+    
+    crop = img.crop((int(left), int(top), int(right), int(bottom))).resize((400, 400), Image.LANCZOS)
     draw_mag = ImageDraw.Draw(crop)
-    cx, cy = 200, 200 # مرکز مگنیفایر
+    cx, cy = 200, 200
     draw_mag.line((cx-20, cy, cx+20, cy), fill="red", width=2)
     draw_mag.line((cx, cy-20, cx, cy+20), fill="red", width=2)
     return crop, (left, top)
 
 # --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz Precision V3.4", layout="wide")
+st.set_page_config(page_title="Aariz Precision V3.5", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-# متغیر آپلودر حتما باید در اینجا تعریف شود
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
-if uploaded_file and models:
+if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("AI Analysis..."):
+        with st.spinner("هوش مصنوعی در حال آنالیز دقیق (Ensemble)..."):
             img_gray = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
             t = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
             with torch.no_grad():
                 outs = [m(t)[0].cpu().numpy() for m in models]
+            
             coords = {}
             sx, sy = raw_img.width/512, raw_img.height/512
+            ANT_IDX = [10, 14, 9, 5, 28, 20] # نقاط قدامی
+            POST_IDX = [7, 11, 12, 15]      # نقاط خلفی/TMJ
+            
             for i in range(29):
-                hm = outs[0][i]
+                # انتخاب مدل تخصصی برای هر ناحیه جهت افزایش دقت
+                hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
                 y, x = np.unravel_index(np.argmax(hm), hm.shape)
                 coords[i] = [int(x * sx), int(y * sy)]
             st.session_state.lms = coords
@@ -109,22 +115,18 @@ if uploaded_file and models:
     
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        st.caption("روی ذره‌بین کلیک کنید تا نقطه دقیقاً زیر نشانگر قرمز قرار گیرد.")
-        mag_img, (offset_x, offset_y) = get_precision_magnifier(raw_img, st.session_state.lms[target_idx])
+        mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
+        res_mag = streamlit_image_coordinates(mag_img, key=f"mag_{target_idx}") # کلید داینامیک برای جلوگیری از لوپ
         
-        # کلیک در مگنیفایر
-        res_mag = streamlit_image_coordinates(mag_img, key="mag_precision")
         if res_mag:
-            # تبدیل کلیک در زوم (400px) به تصویر اصلی (100px window)
-            scale_factor = 100 / 400
-            new_x = int(offset_x + (res_mag["x"] * scale_factor))
-            new_y = int(offset_y + (res_mag["y"] * scale_factor))
-            if st.session_state.lms[target_idx] != [new_x, new_y]:
+            scale = 120 / 400
+            new_x, new_y = int(off_x + (res_mag["x"] * scale)), int(off_y + (res_mag["y"] * scale))
+            if abs(st.session_state.lms[target_idx][0] - new_x) > 1 or abs(st.session_state.lms[target_idx][1] - new_y) > 1:
                 st.session_state.lms[target_idx] = [new_x, new_y]
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full Canvas")
+        st.subheader("🖼 Full View")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -132,20 +134,17 @@ if uploaded_file and models:
             color = "red" if i == target_idx else "#00FF00"
             r = 15 if i == target_idx else 8
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-
-        # کلیک در تصویر اصلی برای جابجایی بزرگ
-        res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{uploaded_file.name}")
         if res_main:
-            scale_main = raw_img.width / 850
-            main_x = int(res_main["x"] * scale_main)
-            main_y = int(res_main["y"] * scale_main)
-            if st.session_state.lms[target_idx] != [main_x, main_y]:
-                st.session_state.lms[target_idx] = [main_x, main_y]
+            scale_m = raw_img.width / 850
+            mx, my = int(res_main["x"] * scale_m), int(res_main["y"] * scale_m)
+            if abs(st.session_state.lms[target_idx][0] - mx) > 2 or abs(st.session_state.lms[target_idx][1] - my) > 2:
+                st.session_state.lms[target_idx] = [mx, my]
                 st.rerun()
 
-    # نمایش گزارش در پایین صفحه
+    # --- گزارش نهایی ---
     st.divider()
-    c1, c2, c3 = st.columns(3)
     def get_a(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
@@ -153,6 +152,6 @@ if uploaded_file and models:
     
     sna = get_a(l[10], l[4], l[0])
     snb = get_a(l[10], l[4], l[2])
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{round(sna-snb, 1)}°")
+    st.columns(3)[0].metric("SNA", f"{sna}°")
+    st.columns(3)[1].metric("SNB", f"{snb}°")
+    st.columns(3)[2].metric("ANB", f"{round(sna-snb, 1)}°")
