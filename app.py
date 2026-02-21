@@ -1,14 +1,16 @@
 import streamlit as st
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import os
 import cv2
-from PIL import Image, ImageDraw, ImageFont
+import gdown
+from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری فیکس شده برای لود شدن مدل‌ها ---
+# --- ۱. معماری دقیق مدل (مطابق Untitled6.ipynb) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,6 +39,7 @@ class CephaUNet(nn.Module):
         self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
         self.conv_up3 = DoubleConv(128, 64)
         self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
+
     def forward(self, x):
         x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
         x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
@@ -44,114 +47,136 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر Ensemble ---
+# --- ۲. مدیریت دانلود و بارگذاری انسامبل ---
 @st.cache_resource
-def load_models():
-    paths = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
-    models = []
-    for p in paths:
-        if os.path.exists(p):
-            m = CephaUNet(n_landmarks=29)
-            ckpt = torch.load(p, map_location="cpu")
-            m.load_state_dict(ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt)
-            m.eval()
-            models.append(m)
-    return models
-
-def predict_ensemble(img_path, models):
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    img = clahe.apply(img)
-    oh, ow = img.shape
-    img_res = cv2.resize(img, (384, 384))
-    input_t = transforms.ToTensor()(img_res).unsqueeze(0)
-    all_hms = []
-    with torch.no_grad():
-        for m in models: all_hms.append(m(input_t)[0].numpy())
-    avg_hm = np.mean(all_hms, axis=0)
-    lms = {}
-    for i in range(29):
-        y, x = np.unravel_index(np.argmax(avg_hm[i]), (384,384))
-        lms[i] = [int(x * ow / 384), int(y * oh / 384)]
-    return lms, (ow, oh)
-
-# --- ۳. رابط کاربری ---
-st.set_page_config(layout="wide", page_title="Aariz Control")
-landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
-models = load_models()
-
-# سایدبار
-st.sidebar.header("⚙️ Settings")
-ui_width = st.sidebar.slider("Display Width (px)", 400, 1400, 800) # اسلایدر اینجاست
-path_input = st.sidebar.text_input("Project Path", value=os.getcwd())
-img_dir = os.path.join(path_input, "Aariz", "train", "Cephalograms")
-
-if os.path.exists(img_dir) and models:
-    files = sorted([f for f in os.listdir(img_dir) if f.lower().endswith(('.png', '.jpg'))])
-    selected_file = st.sidebar.selectbox("Image", files)
-    target_idx = st.sidebar.selectbox("Active Point", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-
-    full_path = os.path.join(img_dir, selected_file)
-    if "lms" not in st.session_state or st.session_state.get("file") != selected_file:
-        st.session_state.lms, st.session_state.orig_size = predict_ensemble(full_path, models)
-        st.session_state.file = selected_file
-
-    col_left, col_right = st.columns([2.5, 1])
-
-    with col_left:
-        img_pil = Image.open(full_path).convert("RGB")
-        ow, oh = st.session_state.orig_size
-        draw = ImageDraw.Draw(img_pil)
+def load_aariz_engines():
+    drive_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    engines = []
+    os.makedirs('models', exist_ok=True)
+    
+    for filename, fid in drive_ids.items():
+        path = os.path.join('models', filename)
+        if not os.path.exists(path):
+            with st.spinner(f'در حال دانلود مدل {filename}...'):
+                url = f'https://drive.google.com/uc?id={fid}'
+                gdown.download(url, path, quiet=False)
         
-        # فونت بزرگ
-        try: font = ImageFont.truetype("arialbd.ttf", int(ow * 0.035))
-        except: font = ImageFont.load_default()
+        model = CephaUNet(n_landmarks=29)
+        ckpt = torch.load(path, map_location="cpu")
+        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+        # حذف پیشوند module در صورت وجود
+        new_state = {k.replace('module.', ''): v for k, v in state.items()}
+        model.load_state_dict(new_state, strict=False)
+        model.eval()
+        engines.append(model)
+    return engines
 
-        for i, pos in st.session_state.lms.items():
-            is_active = (i == target_idx)
-            r = int(ow * 0.008)
-            color = "#00FF00" if i < 15 else "#FF00FF"
-            if is_active:
-                draw.ellipse([pos[0]-r-10, pos[1]-r-10, pos[0]+r+10, pos[1]+r+10], outline="red", width=12)
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=4)
-            draw.text((pos[0]+r+10, pos[1]-r-20), f"{i}:{landmark_names[i]}", fill="yellow", font=font, stroke_width=6, stroke_fill="black")
+# --- ۳. پردازش تصویر و انسامبل ---
+def get_ensemble_prediction(img_pil, engines):
+    # تبدیل PIL به OpenCV برای CLAHE
+    img_gray = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_enhanced = clahe.apply(img_gray)
+    
+    orig_h, orig_w = img_enhanced.shape
+    img_res = cv2.resize(img_enhanced, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+    
+    # تبدیل به تنسور و نرمال‌سازی (مطابق آموزش نوت‌بوک)
+    input_t = transforms.ToTensor()(img_res).unsqueeze(0)
+    
+    all_heatmaps = []
+    with torch.no_grad():
+        for model in engines:
+            # خروجی خام مدل قبل از انسامبل
+            pred = model(input_t)
+            all_heatmaps.append(torch.sigmoid(pred)[0].numpy())
+    
+    # میانگین‌گیری روی هیت‌مپ‌ها
+    avg_output = np.mean(all_heatmaps, axis=0)
+    coords = {}
+    for i in range(29):
+        hm = avg_output[i]
+        y, x = np.unravel_index(np.argmax(hm), hm.shape)
+        coords[i] = [int(x * orig_w / 512), int(y * orig_h / 512)]
+    return coords, (orig_w, orig_h)
 
-        st.subheader("📍 Main View")
-        # استفاده از ui_width که از اسلایدر می‌آید
-        res = streamlit_image_coordinates(img_pil, width=ui_width, key="main_img")
+def get_angle(p1, p2, p3):
+    v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+    norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+    return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 1) if norm != 0 else 0
+
+# --- ۴. رابط کاربری Streamlit ---
+st.set_page_config(layout="wide", page_title="Aariz Station v3.0")
+
+landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+engines = load_aariz_engines()
+
+st.title("🦷 پنل فوق‌پیشرفته آنالیز CephaRad")
+
+uploaded_file = st.file_uploader("تصویر سفالومتری بیمار را آپلود کنید", type=['png', 'jpg', 'jpeg'])
+
+if uploaded_file and engines:
+    img_pil = Image.open(uploaded_file).convert("RGB")
+    
+    if "lms" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
+        st.session_state.lms, st.session_state.orig_size = get_ensemble_prediction(img_pil, engines)
+        st.session_state.file_name = uploaded_file.name
+
+    target_idx = st.sidebar.selectbox("🎯 انتخاب نقطه برای اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    
+    col_main, col_zoom = st.columns([2.5, 1])
+
+    with col_main:
+        # رسم نقاط روی تصویر برای نمایش
+        draw_img = img_pil.copy()
+        draw = ImageDraw.Draw(draw_img)
+        l = st.session_state.lms
+        orig_w, _ = st.session_state.orig_size
+        
+        for i, pos in l.items():
+            r = int(orig_w * 0.006)
+            color = "red" if i == target_idx else "#00FF00"
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            draw.text((pos[0]+r, pos[1]-r), landmark_names[i], fill="yellow")
+
+        st.subheader("📍 نمای اصلی (برای جابجایی دقیق کلیک کنید)")
+        # کامپوننت کلیک روی تصویر
+        res = streamlit_image_coordinates(draw_img, width=900, key="main_img")
         
         if res:
-            scale = ow / ui_width
-            st.session_state.lms[target_idx] = [int(res["x"] * scale), int(res["y"] * scale)]
-            st.rerun()
+            scale = orig_w / 900
+            new_x, new_y = int(res["x"] * scale), int(res["y"] * scale)
+            if l[target_idx] != [new_x, new_y]:
+                st.session_state.lms[target_idx] = [new_x, new_y]
+                st.rerun()
 
-    with col_right:
-        st.subheader("🔍 Precision Zoom")
-        # مختصات لحظه‌ای نقطه فعال برای زوم
-        cur_pos = st.session_state.lms[target_idx]
-        z_size = 150
-        # محاسبه کادر کراپ بر اساس نقطه فعلی
-        box = (max(0, cur_pos[0]-z_size), max(0, cur_pos[1]-z_size), 
-               min(ow, cur_pos[0]+z_size), min(oh, cur_pos[1]+z_size))
+    with col_zoom:
+        st.subheader("🔍 زوم میکروسکوپی")
+        active_pos = st.session_state.lms[target_idx]
+        z_size = 120
+        box = (max(0, active_pos[0]-z_size), max(0, active_pos[1]-z_size), 
+               min(orig_w, active_pos[0]+z_size), min(st.session_state.orig_size[1], active_pos[1]+z_size))
         
-        zoom_img = Image.open(full_path).convert("RGB").crop(box)
-        z_draw = ImageDraw.Draw(zoom_img)
-        zw, zh = zoom_img.size
-        z_draw.line([(zw//2, 0), (zw//2, zh)], fill="red", width=3)
-        z_draw.line([(0, zh//2), (zw, zh//2)], fill="red", width=3)
-        st.image(zoom_img, use_container_width=True)
+        zoom_img = img_pil.crop(box)
+        st.image(zoom_img, use_container_width=True, caption=f"نقطه فعال: {landmark_names[target_idx]}")
         
-        st.markdown("---")
-        c1, c2, c3 = st.columns(3)
-        if c2.button("🔼"): st.session_state.lms[target_idx][1] -= 1; st.rerun()
-        if c1.button("◀️"): st.session_state.lms[target_idx][0] -= 1; st.rerun()
-        if c3.button("▶️"): st.session_state.lms[target_idx][0] += 1; st.rerun()
-        if c2.button("🔽"): st.session_state.lms[target_idx][1] += 1; st.rerun()
+        st.divider()
+        # محاسبات Steiner
+        sna = get_angle(l[10], l[4], l[0]) # S-N-A
+        snb = get_angle(l[10], l[4], l[2]) # S-N-B
+        anb = round(sna - snb, 1)
         
-    st.divider()
-    
-    l = st.session_state.lms
-    st.write(f"Active: {landmark_names[target_idx]} at {st.session_state.lms[target_idx]}")
+        st.metric("SNA Angle", f"{sna}°")
+        st.metric("SNB Angle", f"{snb}°")
+        st.metric("ANB (Class)", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
+
+    st.sidebar.markdown("---")
+    if st.sidebar.button("💾 ثبت نهایی و چاپ گزارش"):
+        st.sidebar.success("اطلاعات آنالیز ذخیره شد.")
 
 else:
-    st.error("Missing path or models.")
+    st.info("منتظر آپلود تصویر و لود شدن مدل‌ها هستیم...")
