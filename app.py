@@ -8,6 +8,64 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
+# [ساختار مدل CephaUNet و لودر مدل‌ها مطابق نسخه مرجع V3.3 - برای اختصار در اینجا تکرار نشده]
+
+def get_precision_magnifier(img, coord, zoom=4, size=100):
+    x, y = coord
+    left, top = max(0, int(x - size//2)), max(0, int(y - size//2))
+    right, bottom = min(img.width, int(x + size//2)), min(img.height, int(y + size//2))
+    crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.LANCZOS)
+    
+    draw_mag = ImageDraw.Draw(crop)
+    cx, cy = 200, 200 
+    draw_mag.line((cx-20, cy, cx+20, cy), fill="red", width=2)
+    draw_mag.line((cx, cy-20, cx, cy+20), fill="red", width=2)
+    return crop, (left, top) # برگرداندن مختصات گوشه برای محاسبه جابجایی
+
+# --- رابط کاربری ---
+st.set_page_config(page_title="Aariz Precision V3.4", layout="wide")
+# [کد لود مدل و آپلود فایل...]
+
+if uploaded_file:
+    # [کد پیش‌بینی AI...]
+    
+    col1, col2 = st.columns([1.5, 2]) # تغییر چیدمان برای تمرکز بر ذره‌بین
+    
+    with col1:
+        st.subheader("🎯 Micro-Adjustment")
+        st.write("برای تنظیم میلی‌متری، روی هدف زیر کلیک کنید:")
+        
+        # نمایش ذره‌بین تعاملی
+        mag_img, (offset_x, offset_y) = get_precision_magnifier(raw_img, st.session_state.lms[target_idx])
+        
+        # گرفتن کلیک از داخل ذره‌بین
+        res_mag = streamlit_image_coordinates(mag_img, key="mag_click")
+        
+        if res_mag:
+            # تبدیل مختصات کلیک در ذره‌بین (۴۰۰x۴۰۰) به مختصات تصویر اصلی
+            click_x_in_crop = res_mag["x"] * (100 / 400) # بر اساس size=100 در تابع
+            click_y_in_crop = res_mag["y"] * (100 / 400)
+            
+            new_x = int(offset_x + click_x_in_crop)
+            new_y = int(offset_y + click_y_in_crop)
+            
+            if st.session_state.lms[target_idx] != [new_x, new_y]:
+                st.session_state.lms[target_idx] = [new_x, new_y]
+                st.rerun()
+
+    with col2:
+        st.subheader("🖼 Full View")
+        # [رسم تصویر اصلی و گرفتن کلیک برای جابجایی‌های بزرگ...]
+        # (دقیقا مشابه نسخه قبل)import streamlit as st
+import torch
+import torch.nn as nn
+import numpy as np
+import os
+import gdown
+from PIL import Image, ImageDraw
+import torchvision.transforms as transforms
+from streamlit_image_coordinates import streamlit_image_coordinates
+
 # --- ۱. ساختار مدل مرجع (ثابت طبق حافظه) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
@@ -133,3 +191,4 @@ if uploaded_file and models:
         st.header("📊 آنالیز")
         # [محاسبات SNA/SNB مشابه قبل...]
         st.info("نشانگر قرمز در ذره‌بین، مرکز دقیق لندمارک انتخابی شماست.")
+
