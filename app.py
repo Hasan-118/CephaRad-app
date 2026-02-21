@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع (ثابت) ---
+# --- ۱. ساختار مدل مرجع (تطبیق ۱۰۰٪) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -45,7 +45,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. توابع کمکی ---
+# --- ۲. توابع لودر و کمکی ---
 @st.cache_resource
 def load_aariz_system():
     model_ids = {
@@ -73,10 +73,10 @@ def get_magnified_crop(img, coord, zoom_factor=4, crop_size=100):
     left, top = max(0, x - crop_size//2), max(0, y - crop_size//2)
     right, bottom = min(img.width, x + crop_size//2), min(img.height, y + crop_size//2)
     crop = img.crop((left, top, right, bottom))
-    return crop.resize((crop.width * zoom_factor, crop.height * zoom_factor), Image.NEAREST)
+    return crop.resize((400, 400), Image.NEAREST) # اندازه ثابت برای پایداری UI
 
 # --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz AI Station V2.7", layout="wide")
+st.set_page_config(page_title="Aariz AI Station V2.8", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -86,7 +86,6 @@ if uploaded_file and models:
     raw_img = Image.open(uploaded_file).convert("RGB")
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        # AI Logic... (Ensemble Prediction)
         img_gray = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
         t = transforms.ToTensor()(img_gray).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -100,22 +99,19 @@ if uploaded_file and models:
             coords[i] = [int(x * sx), int(y * sy)]
         st.session_state.lms = coords
         st.session_state.file_id = uploaded_file.name
+        st.session_state.mouse_pos = coords[0]
 
-    target_idx = st.sidebar.selectbox("نقطه برای اصلاح کلیک نهایی:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("نقطه فعال جهت اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
     col1, col2 = st.columns([2.5, 1])
     
     with col1:
-        # مکان موقت برای ذخیره مختصات موس
-        if "mouse_pos" not in st.session_state:
-            st.session_state.mouse_pos = st.session_state.lms[target_idx]
-
-        # نمایش ذره‌بین زنده
-        st.write("🔍 **Live View (ناحیه زیر موس):**")
+        # نمایش ذره‌بین بر اساس آخرین موقعیت ثبت شده
+        st.write(f"🔍 **Magnifier: {landmark_names[target_idx]}**")
         mag = get_magnified_crop(raw_img, st.session_state.mouse_pos)
-        st.image(mag, width=280)
+        st.image(mag, width=300)
 
-        # آماده‌سازی تصویر برای نمایش
+        # رسم لندمارک‌ها
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -124,28 +120,35 @@ if uploaded_file and models:
             r = 14 if i == target_idx else 7
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
 
-        # استفاده از on_move برای ذره‌بین زنده
-        value = streamlit_image_coordinates(draw_img, width=800, key="aariz_live", on_move=True)
+        # استفاده از حالت Click-based برای پایداری در سیستم کلود
+        value = streamlit_image_coordinates(draw_img, width=800, key="aariz_v2_8")
 
         if value:
             scale = raw_img.width / 800
-            current_mouse = [int(value["x"]*scale), int(value["y"]*scale)]
-            
-            # به‌روزرسانی ذره‌بین در هر حرکت موس
-            if st.session_state.mouse_pos != current_mouse:
-                st.session_state.mouse_pos = current_mouse
-                # اگر کلیک هم کرده باشد (MouseDown)
-                if value.get("mousedown", False):
-                    st.session_state.lms[target_idx] = current_mouse
+            new_pos = [int(value["x"]*scale), int(value["y"]*scale)]
+            # به‌روزرسانی همزمان لندمارک و ذره‌بین با کلیک
+            if st.session_state.lms[target_idx] != new_pos:
+                st.session_state.lms[target_idx] = new_pos
+                st.session_state.mouse_pos = new_pos
                 st.rerun()
 
     with col2:
-        st.header("📊 Analysis")
-        # [بخش گزارش عددی SNA/SNB مشابه قبل...]
+        st.header("📊 Clinical Report")
         def get_a(p1, p2, p3):
             v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 1)
-        sna, snb = get_a(l[10], l[4], l[0]), get_a(l[10], l[4], l[2])
-        st.metric("SNA", f"{sna}°")
-        st.metric("SNB", f"{snb}°")
-        st.metric("ANB", f"{round(sna - snb, 1)}°")
+            norm = np.linalg.norm(v1)*np.linalg.norm(v2)
+            if norm == 0: return 0
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 1)
+        
+        l = st.session_state.lms
+        sna = get_a(l[10], l[4], l[0])
+        snb = get_a(l[10], l[4], l[2])
+        anb = round(sna - snb, 1)
+        
+        st.metric("SNA (Maxilla)", f"{sna}°")
+        st.metric("SNB (Mandible)", f"{snb}°")
+        st.metric("ANB (Class)", f"{anb}°")
+        
+        st.divider()
+        if st.button("💾 Save Final Analysis"):
+            st.success("مختصات لندمارک‌ها تایید شد.")
