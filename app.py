@@ -1,32 +1,14 @@
-import os
-import gdown
 import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
+import os
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۰. تابع دانلود مدل‌ها (قبل از لود کردن مدل‌ها باید اجرا شود) ---
-def download_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    
-    for filename, file_id in model_ids.items():
-        if not os.path.exists(filename):
-            with st.spinner(f'در حال دانلود مدل {filename} از گوگل درایو...'):
-                url = f'https://drive.google.com/uc?id={file_id}'
-                try:
-                    gdown.download(url, filename, quiet=False)
-                except Exception as e:
-                    st.error(f"خطا در دانلود {filename}: {e}")
-
-# --- ۱. معماری مدل (بدون تغییر) ---
+# --- ۱. معماری فیکس شده برای لود شدن مدل‌ها ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -62,106 +44,114 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر مدل‌ها و پیش‌بینی ---
+# --- ۲. لودر Ensemble ---
 @st.cache_resource
-def load_all_engines():
-    # اول دانلود مدل‌ها اگر وجود ندارند
-    download_models()
-    
+def load_models():
     paths = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     models = []
     for p in paths:
         if os.path.exists(p):
-            try:
-                m = CephaUNet(n_landmarks=29)
-                ckpt = torch.load(p, map_location="cpu")
-                state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-                m.load_state_dict(state)
-                m.eval()
-                models.append(m)
-            except Exception as e:
-                st.warning(f"مدل {p} بارگذاری نشد: {e}")
+            m = CephaUNet(n_landmarks=29)
+            ckpt = torch.load(p, map_location="cpu")
+            m.load_state_dict(ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt)
+            m.eval()
+            models.append(m)
     return models
 
-def run_inference(image_pil, models):
-    img_np = np.array(image_pil.convert('L'))
+def predict_ensemble(img_path, models):
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    img_enhanced = clahe.apply(img_np)
-    oh, ow = img_enhanced.shape
-    img_res = cv2.resize(img_enhanced, (384, 384))
+    img = clahe.apply(img)
+    oh, ow = img.shape
+    img_res = cv2.resize(img, (384, 384))
     input_t = transforms.ToTensor()(img_res).unsqueeze(0)
-    
-    hms = []
+    all_hms = []
     with torch.no_grad():
-        for m in models: hms.append(m(input_t)[0].numpy())
-    
-    avg_hm = np.mean(hms, axis=0)
+        for m in models: all_hms.append(m(input_t)[0].numpy())
+    avg_hm = np.mean(all_hms, axis=0)
     lms = {}
     for i in range(29):
         y, x = np.unravel_index(np.argmax(avg_hm[i]), (384,384))
         lms[i] = [int(x * ow / 384), int(y * oh / 384)]
     return lms, (ow, oh)
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(layout="wide", page_title="Aariz AI Mobile")
+# --- ۳. رابط کاربری ---
+st.set_page_config(layout="wide", page_title="Aariz Control")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+models = load_models()
 
-# فراخوانی لودر (که خودش دانلودر را صدا می‌زند)
-engines = load_all_engines()
+# سایدبار
+st.sidebar.header("⚙️ Settings")
+ui_width = st.sidebar.slider("Display Width (px)", 400, 1400, 800) # اسلایدر اینجاست
+path_input = st.sidebar.text_input("Project Path", value=os.getcwd())
+img_dir = os.path.join(path_input, "Aariz", "train", "Cephalograms")
 
-with st.sidebar:
-    st.header("📲 Aariz Control")
-    ui_width = st.slider("Magnification Scale", 300, 1200, 750)
-    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"])
-    target_idx = st.selectbox("Landmark", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+if os.path.exists(img_dir) and models:
+    files = sorted([f for f in os.listdir(img_dir) if f.lower().endswith(('.png', '.jpg'))])
+    selected_file = st.sidebar.selectbox("Image", files)
+    target_idx = st.sidebar.selectbox("Active Point", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-if uploaded_file and engines:
-    img_raw = Image.open(uploaded_file).convert("RGB")
-    file_id = uploaded_file.name
-    
-    if "lms" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("Analyzing..."):
-            st.session_state.lms, st.session_state.orig_size = run_inference(img_raw, engines)
-            st.session_state.file_id = file_id
+    full_path = os.path.join(img_dir, selected_file)
+    if "lms" not in st.session_state or st.session_state.get("file") != selected_file:
+        st.session_state.lms, st.session_state.orig_size = predict_ensemble(full_path, models)
+        st.session_state.file = selected_file
 
-    col_main, col_detail = st.columns([2, 1])
-    
-    with col_main:
+    col_left, col_right = st.columns([2.5, 1])
+
+    with col_left:
+        img_pil = Image.open(full_path).convert("RGB")
         ow, oh = st.session_state.orig_size
-        draw = ImageDraw.Draw(img_raw)
-        try: font = ImageFont.truetype("arial.ttf", int(ow * 0.03))
+        draw = ImageDraw.Draw(img_pil)
+        
+        # فونت بزرگ
+        try: font = ImageFont.truetype("arialbd.ttf", int(ow * 0.035))
         except: font = ImageFont.load_default()
 
         for i, pos in st.session_state.lms.items():
             is_active = (i == target_idx)
+            r = int(ow * 0.008)
             color = "#00FF00" if i < 15 else "#FF00FF"
-            r = int(ow * 0.007)
             if is_active:
-                draw.ellipse([pos[0]-r-10, pos[1]-r-10, pos[0]+r+10, pos[1]+r+10], outline="red", width=10)
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color)
+                draw.ellipse([pos[0]-r-10, pos[1]-r-10, pos[0]+r+10, pos[1]+r+10], outline="red", width=12)
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=4)
+            draw.text((pos[0]+r+10, pos[1]-r-20), f"{i}:{landmark_names[i]}", fill="yellow", font=font, stroke_width=6, stroke_fill="black")
 
-        res = streamlit_image_coordinates(img_raw, width=ui_width, key="canvas")
+        st.subheader("📍 Main View")
+        # استفاده از ui_width که از اسلایدر می‌آید
+        res = streamlit_image_coordinates(img_pil, width=ui_width, key="main_img")
+        
         if res:
             scale = ow / ui_width
-            new_p = [int(res["x"] * scale), int(res["y"] * scale)]
-            if st.session_state.lms[target_idx] != new_p:
-                st.session_state.lms[target_idx] = new_p
-                st.rerun()
+            st.session_state.lms[target_idx] = [int(res["x"] * scale), int(res["y"] * scale)]
+            st.rerun()
 
-    with col_detail:
-        st.subheader("🔍 Zoom")
+    with col_right:
+        st.subheader("🔍 Precision Zoom")
+        # مختصات لحظه‌ای نقطه فعال برای زوم
         cur_pos = st.session_state.lms[target_idx]
-        z = 120
-        box = (max(0, cur_pos[0]-z), max(0, cur_pos[1]-z), min(ow, cur_pos[0]+z), min(oh, cur_pos[1]+z))
-        crop = img_raw.crop(box)
-        st.image(crop, use_container_width=True)
+        z_size = 150
+        # محاسبه کادر کراپ بر اساس نقطه فعلی
+        box = (max(0, cur_pos[0]-z_size), max(0, cur_pos[1]-z_size), 
+               min(ow, cur_pos[0]+z_size), min(oh, cur_pos[1]+z_size))
         
-        # Nudge buttons
+        zoom_img = Image.open(full_path).convert("RGB").crop(box)
+        z_draw = ImageDraw.Draw(zoom_img)
+        zw, zh = zoom_img.size
+        z_draw.line([(zw//2, 0), (zw//2, zh)], fill="red", width=3)
+        z_draw.line([(0, zh//2), (zw, zh//2)], fill="red", width=3)
+        st.image(zoom_img, use_container_width=True)
+        
+        st.markdown("---")
         c1, c2, c3 = st.columns(3)
         if c2.button("🔼"): st.session_state.lms[target_idx][1] -= 1; st.rerun()
-        k1, k2, k3 = st.columns(3)
-        if k1.button("◀️"): st.session_state.lms[target_idx][0] -= 1; st.rerun()
-        if k3.button("▶️"): st.session_state.lms[target_idx][0] += 1; st.rerun()
-        if k2.button("🔽"): st.session_state.lms[target_idx][1] += 1; st.rerun()
+        if c1.button("◀️"): st.session_state.lms[target_idx][0] -= 1; st.rerun()
+        if c3.button("▶️"): st.session_state.lms[target_idx][0] += 1; st.rerun()
+        if c2.button("🔽"): st.session_state.lms[target_idx][1] += 1; st.rerun()
+        
+    st.divider()
+    
+    l = st.session_state.lms
+    st.write(f"Active: {landmark_names[target_idx]} at {st.session_state.lms[target_idx]}")
+
 else:
-    st.info("Please upload a file.")
+    st.error("Missing path or models.")
