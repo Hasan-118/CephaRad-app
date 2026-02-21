@@ -1,136 +1,167 @@
+import os
+import gdown
 import streamlit as st
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import cv2
-import os
-import gdown
-from PIL import Image, ImageDraw
-from collections import OrderedDict
+from PIL import Image, ImageDraw, ImageFont
+import torchvision.transforms as transforms
+from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری UNet (دقیقاً مطابق پارامترهای نوت‌بوک CephaRad) ---
+# --- ۰. تابع دانلود مدل‌ها (قبل از لود کردن مدل‌ها باید اجرا شود) ---
+def download_models():
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    
+    for filename, file_id in model_ids.items():
+        if not os.path.exists(filename):
+            with st.spinner(f'در حال دانلود مدل {filename} از گوگل درایو...'):
+                url = f'https://drive.google.com/uc?id={file_id}'
+                try:
+                    gdown.download(url, filename, quiet=False)
+                except Exception as e:
+                    st.error(f"خطا در دانلود {filename}: {e}")
+
+# --- ۱. معماری مدل (بدون تغییر) ---
 class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.Dropout2d(p=dropout_prob),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
-    def forward(self, x): return self.double_conv(x)
+    def forward(self, x): return self.conv(x)
 
-class Down(nn.Module):
-    def __init__(self, in_channels, out_channels):
+class CephaUNet(nn.Module):
+    def __init__(self, n_landmarks=29):
         super().__init__()
-        self.maxpool_conv = nn.Sequential(nn.MaxPool2d(2), DoubleConv(in_channels, out_channels))
-    def forward(self, x): return self.maxpool_conv(x)
-
-class Up(nn.Module):
-    def __init__(self, in_channels, out_channels, bilinear=True):
-        super().__init__()
-        if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels)
-        else:
-            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
-
-    def forward(self, x1, x2):
-        x1 = self.up(x1)
-        diffY = x2.size()[2] - x1.size()[2]
-        diffX = x2.size()[3] - x1.size()[3]
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
-        x = torch.cat([x2, x1], dim=1)
-        return self.conv(x)
-
-class UNet(nn.Module):
-    def __init__(self, n_channels=1, n_classes=29):
-        super(UNet, self).__init__()
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = Down(64, 128)
-        self.down2 = Down(128, 256)
-        self.down3 = Down(256, 512)
-        self.down4 = Down(512, 512) # در برخی نسخه‌ها ۵۱۲ است، اگر خطا داد به ۱۰۲۴ تغییر دهید
-        self.up1 = Up(1024, 256)
-        self.up2 = Up(512, 128)
-        self.up3 = Up(256, 64)
-        self.up4 = Up(128, 64)
-        self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
-
+        self.inc = DoubleConv(1, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
+        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
+        self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
+        self.conv_up2 = DoubleConv(256, 128)
+        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
+        self.conv_up3 = DoubleConv(128, 64)
+        self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
     def forward(self, x):
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
-        x5 = self.down4(x4)
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
+        x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
+        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
+        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
+        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. بارگذاری هوشمند (رفع مشکل لایه‌های Module) ---
-def load_model_weights(model, path, device):
-    state_dict = torch.load(path, map_location=device)
-    new_state_dict = OrderedDict()
-    for k, v in state_dict.items():
-        name = k[7:] if k.startswith('module.') else k # حذف پیشوند module
-        new_state_dict[name] = v
-    model.load_state_dict(new_state_dict, strict=False)
-    return model
-
+# --- ۲. لودر مدل‌ها و پیش‌بینی ---
 @st.cache_resource
-def load_all_ensemble():
-    device = torch.device('cpu')
-    ids = {'gen': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'spec': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+def load_all_engines():
+    # اول دانلود مدل‌ها اگر وجود ندارند
+    download_models()
+    
+    paths = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     models = []
-    for name, fid in ids.items():
-        path = f"models/{name}.pth"
-        os.makedirs('models', exist_ok=True)
-        if not os.path.exists(path): gdown.download(id=fid, output=path, quiet=False)
-        m = UNet(n_channels=1, n_classes=29)
-        m = load_model_weights(m, path, device)
-        m.eval()
-        models.append(m)
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                m = CephaUNet(n_landmarks=29)
+                ckpt = torch.load(p, map_location="cpu")
+                state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+                m.load_state_dict(state)
+                m.eval()
+                models.append(m)
+            except Exception as e:
+                st.warning(f"مدل {p} بارگذاری نشد: {e}")
     return models
 
-# --- ۳. رابط کاربری و اجرای آنالیز ---
-st.title("🦷 سامانه آنالیز هوشمند CephRad")
-
-uploaded = st.file_uploader("تصویر را انتخاب کنید", type=['png', 'jpg', 'jpeg'])
-
-if uploaded:
-    img_orig = Image.open(uploaded).convert('RGB')
-    w, h = img_orig.size
+def run_inference(image_pil, models):
+    img_np = np.array(image_pil.convert('L'))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_enhanced = clahe.apply(img_np)
+    oh, ow = img_enhanced.shape
+    img_res = cv2.resize(img_enhanced, (384, 384))
+    input_t = transforms.ToTensor()(img_res).unsqueeze(0)
     
-    # پیش‌پردازش (بسیار مهم: نرمال‌سازی منطبق بر دیتای Aariz)
-    img_input = img_orig.convert('L').resize((512, 512))
-    img_np = np.array(img_input).astype(np.float32) / 255.0
-    # استانداردسازی (اگر در نوت‌بوک شما Mean/Std خاصی بود اینجا اعمال کنید)
-    tensor = torch.from_numpy(img_np).unsqueeze(0).unsqueeze(0)
+    hms = []
+    with torch.no_grad():
+        for m in models: hms.append(m(input_t)[0].numpy())
+    
+    avg_hm = np.mean(hms, axis=0)
+    lms = {}
+    for i in range(29):
+        y, x = np.unravel_index(np.argmax(avg_hm[i]), (384,384))
+        lms[i] = [int(x * ow / 384), int(y * oh / 384)]
+    return lms, (ow, oh)
 
-    if st.button("🚀 اجرای تحلیل انسامبل"):
-        models = load_all_ensemble()
-        with torch.no_grad():
-            # میانگین‌گیری روی خروجی مدل‌ها (Ensemble)
-            preds = [torch.sigmoid(m(tensor)) for m in models]
-            final_pred = torch.mean(torch.stack(preds), dim=0).cpu().numpy()[0]
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(layout="wide", page_title="Aariz AI Mobile")
+landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-        draw = ImageDraw.Draw(img_orig)
-        scale_x, scale_y = w / 512, h / 512
+# فراخوانی لودر (که خودش دانلودر را صدا می‌زند)
+engines = load_all_engines()
+
+with st.sidebar:
+    st.header("📲 Aariz Control")
+    ui_width = st.slider("Magnification Scale", 300, 1200, 750)
+    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"])
+    target_idx = st.selectbox("Landmark", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+
+if uploaded_file and engines:
+    img_raw = Image.open(uploaded_file).convert("RGB")
+    file_id = uploaded_file.name
+    
+    if "lms" not in st.session_state or st.session_state.get("file_id") != file_id:
+        with st.spinner("Analyzing..."):
+            st.session_state.lms, st.session_state.orig_size = run_inference(img_raw, engines)
+            st.session_state.file_id = file_id
+
+    col_main, col_detail = st.columns([2, 1])
+    
+    with col_main:
+        ow, oh = st.session_state.orig_size
+        draw = ImageDraw.Draw(img_raw)
+        try: font = ImageFont.truetype("arial.ttf", int(ow * 0.03))
+        except: font = ImageFont.load_default()
+
+        for i, pos in st.session_state.lms.items():
+            is_active = (i == target_idx)
+            color = "#00FF00" if i < 15 else "#FF00FF"
+            r = int(ow * 0.007)
+            if is_active:
+                draw.ellipse([pos[0]-r-10, pos[1]-r-10, pos[0]+r+10, pos[1]+r+10], outline="red", width=10)
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color)
+
+        res = streamlit_image_coordinates(img_raw, width=ui_width, key="canvas")
+        if res:
+            scale = ow / ui_width
+            new_p = [int(res["x"] * scale), int(res["y"] * scale)]
+            if st.session_state.lms[target_idx] != new_p:
+                st.session_state.lms[target_idx] = new_p
+                st.rerun()
+
+    with col_detail:
+        st.subheader("🔍 Zoom")
+        cur_pos = st.session_state.lms[target_idx]
+        z = 120
+        box = (max(0, cur_pos[0]-z), max(0, cur_pos[1]-z), min(ow, cur_pos[0]+z), min(oh, cur_pos[1]+z))
+        crop = img_raw.crop(box)
+        st.image(crop, use_container_width=True)
         
-        for i in range(29):
-            heatmap = final_pred[i]
-            # پیدا کردن نقطه دقیق ماکزیمم
-            _, max_val, _, max_loc = cv2.minMaxLoc(heatmap)
-            
-            # فقط اگر دقت نقطه از حدی بیشتر بود رسم شود (حذف نقاط پرت)
-            if max_val > 0.1:
-                cx, cy = int(max_loc[0] * scale_x), int(max_loc[1] * scale_y)
-                draw.ellipse([cx-12, cy-12, cx+12, cy+12], fill='red', outline='white', width=3)
-
-        st.image(img_orig, use_column_width=True)
+        # Nudge buttons
+        c1, c2, c3 = st.columns(3)
+        if c2.button("🔼"): st.session_state.lms[target_idx][1] -= 1; st.rerun()
+        k1, k2, k3 = st.columns(3)
+        if k1.button("◀️"): st.session_state.lms[target_idx][0] -= 1; st.rerun()
+        if k3.button("▶️"): st.session_state.lms[target_idx][0] += 1; st.rerun()
+        if k2.button("🔽"): st.session_state.lms[target_idx][1] += 1; st.rerun()
+else:
+    st.info("Please upload a file.")
