@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع ---
+# --- ۱. ساختار مدل مرجع (قفل شده برای حفظ وزن‌ها) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. توابع کمکی ---
+# --- ۲. لودر سیستم و توابع ترسیم ---
 @st.cache_resource
 def load_aariz_system():
     model_ids = {
@@ -67,18 +67,16 @@ def get_safe_magnifier(img, coord, size=120):
     top = max(0, min(int(y - size//2), h - size))
     crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
     draw = ImageDraw.Draw(crop)
-    draw.line((180, 200, 220, 200), fill="red", width=2)
-    draw.line((200, 180, 200, 220), fill="red", width=2)
+    draw.line((180, 200, 220, 200), fill="#FF0000", width=3) # نشانگر مرکز افقی
+    draw.line((200, 180, 200, 220), fill="#FF0000", width=3) # نشانگر مرکز عمودی
     return crop, (left, top)
 
 # --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz Precision V3.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision V3.9", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-# مقداردهی اولیه به ورژن کلیک
-if "click_version" not in st.session_state:
-    st.session_state.click_version = 0
+if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
@@ -92,48 +90,43 @@ if uploaded_file and len(models) == 3:
             t = transforms.ToTensor()(img_input).unsqueeze(0).to(device)
             with torch.no_grad():
                 preds = [m(t)[0].cpu().numpy() for m in models]
-            
             coords = {}
-            scale_x, scale_y = W / 512.0, H / 512.0
-            ANT_IDX = [1, 20, 21, 22, 24, 25, 26, 28] 
-            TMJ_IDX = [11, 12, 15, 16] 
-            
+            sx, sy = W / 512.0, H / 512.0
+            ANT_IDX, TMJ_IDX = [1, 20, 21, 22, 24, 25, 26, 28], [11, 12, 15, 16]
             for i in range(29):
                 hm = preds[1][i] if i in ANT_IDX else (preds[2][i] if i in TMJ_IDX else preds[0][i])
                 y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                coords[i] = [int(x * scale_x), int(y * scale_y)]
-            
+                coords[i] = [int(x * sx), int(y * sy)]
             st.session_state.lms = coords
             st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
     col1, col2 = st.columns([1.2, 2])
-    
     with col1:
         st.subheader("🔍 Micro-Adjustment")
         mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
-        
-        # استفاده از ورژن کلیک در KEY برای ریست کردن ویجت بعد از هر جابجایی
-        mag_key = f"mag_{target_idx}_{st.session_state.click_version}"
-        res_mag = streamlit_image_coordinates(mag_img, key=mag_key)
-        
+        res_mag = streamlit_image_coordinates(mag_img, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
             scale = 120 / 400
-            new_x = int(off_x + (res_mag["x"] * scale))
-            new_y = int(off_y + (res_mag["y"] * scale))
-            
-            # فقط اگر واقعاً کلیک جدیدی دور از مرکز انجام شده باشد
-            if abs(new_x - st.session_state.lms[target_idx][0]) > 0 or abs(new_y - st.session_state.lms[target_idx][1]) > 0:
+            new_x, new_y = int(off_x + (res_mag["x"] * scale)), int(off_y + (res_mag["y"] * scale))
+            if st.session_state.lms[target_idx] != [new_x, new_y]:
                 st.session_state.lms[target_idx] = [new_x, new_y]
-                st.session_state.click_version += 1 # تغییر ورژن برای ریست کردن ویجت در ران بعدی
+                st.session_state.click_version += 1
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full View")
+        st.subheader("🖼 Full View (Steiner Analysis)")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
+        
+        # ترسیم خطوط Steiner (S-N, N-A, N-B)
+        if all(k in l for k in [10, 4, 0, 2]): # S, N, A, B
+            draw.line([tuple(l[10]), tuple(l[4])], fill="#FFFF00", width=3) # S-N Line
+            draw.line([tuple(l[4]), tuple(l[0])], fill="#00FFFF", width=3) # N-A Line
+            draw.line([tuple(l[4]), tuple(l[2])], fill="#FF00FF", width=3) # N-B Line
+
         for i, pos in l.items():
             color = "red" if i == target_idx else "#00FF00"
             r = 15 if i == target_idx else 8
@@ -148,16 +141,15 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- آنالیز Steiner ---
+    # --- محاسبات نهایی ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 1)
     
-    sna = get_ang(l[10], l[4], l[0])
-    snb = get_ang(l[10], l[4], l[2])
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{round(sna-snb, 1)}°")
+    c1.metric("SNA (Maxilla Relationship)", f"{sna}°")
+    c2.metric("SNB (Mandible Relationship)", f"{snb}°")
+    c3.metric("ANB (Skeletal Class)", f"{round(sna-snb, 1)}°")
