@@ -2,7 +2,5 @@ torch
 torchvision
 streamlit
 streamlit-image-coordinates
-opencv-python-headless
 Pillow
 numpy
-gdown
