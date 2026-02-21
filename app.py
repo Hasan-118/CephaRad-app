@@ -3,137 +3,205 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import json
+from datetime import datetime
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
+import math
 
-# --- ۱. اصلاح پردازش مختصات (انتقال دقیق به مختصات اصلی) ---
-def get_prediction(img_path, model):
+# --- ۱. تنظیمات اولیه و پوشه ذخیره‌سازی ---
+RESULTS_DIR = "Aariz_Results"
+if not os.path.exists(RESULTS_DIR):
+    os.makedirs(RESULTS_DIR)
+
+# --- ۲. تعریف معماری مدل (بدون تغییر) ---
+class DoubleConv(nn.Module):
+    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_prob),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
+    def forward(self, x): return self.conv(x)
+
+class CephaUNet(nn.Module):
+    def __init__(self, n_landmarks=29):
+        super().__init__()
+        self.inc = DoubleConv(1, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
+        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
+        self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
+        self.conv_up2 = DoubleConv(256, 128)
+        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
+        self.conv_up3 = DoubleConv(128, 64)
+        self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
+
+    def forward(self, x):
+        x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
+        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
+        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
+        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
+        return self.outc(x)
+
+# --- ۳. بارگذاری مدل‌ها (بهینه شده) ---
+@st.cache_resource
+def load_aariz_models():
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    model_files = [
+        'checkpoint_unet_clinical.pth',
+        'specialist_pure_model.pth',
+        'tmj_specialist_model.pth'
+    ]
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    loaded_models = []
+    
+    for f in model_files:
+        full_path = os.path.join(current_dir, f)
+        if os.path.exists(full_path):
+            try:
+                m = CephaUNet(n_landmarks=29).to(device)
+                ckpt = torch.load(full_path, map_location=device)
+                state_dict = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+                m.load_state_dict(state_dict)
+                m.eval()
+                # بهینه‌سازی سرعت اگر GPU در دسترس باشد
+                if device.type == 'cuda': m = m.half()
+                loaded_models.append(m)
+            except Exception as e:
+                st.sidebar.error(f"خطا در لود {f}: {e}")
+    return loaded_models, device
+
+# --- ۴. پیش‌بینی فوق سریع (Inference Mode) ---
+def run_ai_prediction(img_path, models, device):
     img_orig = Image.open(img_path).convert('L')
-    orig_w, orig_h = img_orig.size
+    orig_size = img_orig.size
+    img_resized = img_orig.resize((512, 512), Image.LANCZOS)
     
-    # تغییر سایز برای ورودی مدل
-    img_res = img_orig.resize((384, 384), Image.BILINEAR)
-    input_t = transforms.ToTensor()(img_res).unsqueeze(0)
+    input_tensor = transforms.ToTensor()(img_resized).unsqueeze(0).to(device)
+    if device.type == 'cuda': input_tensor = input_tensor.half()
     
-    with torch.no_grad():
-        output = model(input_t)[0].numpy()
+    with torch.inference_mode(): # سریع‌تر از no_grad
+        outs = [mod(input_tensor)[0].cpu().float().numpy() for mod in models]
+    
+    ANT_IDX = [10, 14, 9, 5, 28, 20]
+    POST_IDX = [7, 11, 12, 15]
     
     coords = {}
+    sx, sy = orig_size[0]/512, orig_size[1]/512
+    num_m = len(outs)
+
     for i in range(29):
-        hm = output[i]
+        # سیستم هوشمند Ensemble
+        if i in ANT_IDX and num_m >= 2: hm = outs[1][i]
+        elif i in POST_IDX and num_m >= 3: hm = outs[2][i]
+        else: hm = outs[0][i]
+            
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        # فرمول دقیق انتقال: نگاشت مستقیم از ۳۸۴ به سایز اصلی
-        coords[i] = [int(x * (orig_w / 384)), int(y * (orig_h / 384))]
-    return coords, (orig_w, orig_h)
+        coords[i] = [int(x * sx), int(y * sy)]
+    return coords
 
-# --- ۲. آنالیزهای ارتودنسی (Steiner & Wits) ---
-def get_ortho_analysis(l):
-    def angle(p1, p2, p3):
-        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        norm = np.linalg.norm(v1) * np.linalg.norm(v2)
-        if norm == 0: return 0
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 1)
-    
-    # Steiner Analysis
-    sna = angle(l[10], l[4], l[0])  # S-N-A
-    snb = angle(l[10], l[4], l[2])  # S-N-B
-    anb = round(sna - snb, 1)
-    
-    # Nasolabial Angle: Pn(8)-Sn(28)-Ls(25)
-    nla = angle(l[8], l[28], l[25])
-    
-    return {"SNA": sna, "SNB": snb, "ANB": anb, "NLA": nla}
+# --- ۵. رابط کاربری اصلی ---
+st.set_page_config(page_title="Aariz Station V2", layout="wide")
+models, device = load_aariz_models()
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(layout="wide", page_title="Aariz Precision Station")
+# سایدبار وضعیت سخت‌افزار
+st.sidebar.title("⚙️ سیستم و سخت‌افزار")
+st.sidebar.write(f"🖥️ **Device:** `{device.type.upper()}`")
+st.sidebar.write(f"📦 **مدل‌های فعال:** `{len(models)}/3`")
+
+if not models:
+    st.error("فایل‌های وزن مدل پیدا نشدند.")
+    st.stop()
+
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+weak_landmarks = [9, 14, 16, 18, 19, 22, 23]
 
-# لود مدل (با فرض وجود معماری شما)
-@st.cache_resource
-def load_fix_models():
-    # اینجا باید کلاس CephaUNet کامل شما باشد
-    model = CephaUNet().to("cpu")
-    if os.path.exists('checkpoint_unet_clinical.pth'):
-        ckpt = torch.load('checkpoint_unet_clinical.pth', map_location="cpu")
-        model.load_state_dict(ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt, strict=False)
-    model.eval()
-    return model
-
-model = load_fix_models()
-
-# ورودی مسیر
-st.sidebar.title("🛠 Precision Controls")
-path_input = st.sidebar.text_input("Folder Path:", value=os.getcwd())
-img_folder = os.path.join(path_input, "Aariz", "train", "Cephalograms")
+st.sidebar.title("🧠 Aariz AI Control")
+base_dir = st.sidebar.text_input("مسیر پروژه:", value=os.getcwd())
+img_folder = os.path.join(base_dir, "Aariz", "train", "Cephalograms")
 
 if os.path.exists(img_folder):
     files = [f for f in os.listdir(img_folder) if f.lower().endswith(('.png', '.jpg'))]
-    selected = st.sidebar.selectbox("Select Ceph:", files)
-    target_idx = st.sidebar.selectbox("Active Point:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    selected_file = st.sidebar.selectbox("انتخاب سفالوگرام:", files)
+    target_idx = st.sidebar.selectbox("نقطه برای بازبینی:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    img_full_path = os.path.join(img_folder, selected)
+    img_path = os.path.join(img_folder, selected_file)
     
-    if "lms" not in st.session_state or st.session_state.get("file") != selected:
-        st.session_state.lms, st.session_state.orig_size = get_prediction(img_full_path, model)
-        st.session_state.file = selected
+    # مدیریت حافظه برای سرعت لود تصویر
+    if "current_img" not in st.session_state or st.session_state.current_img != selected_file:
+        with st.spinner('در حال پردازش هوشمند...'):
+            st.session_state.lms = run_ai_prediction(img_path, models, device)
+            st.session_state.current_img = selected_file
 
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([2, 1])
     
     with col1:
-        # رسم روی تصویر
-        img_raw = Image.open(img_full_path).convert("RGB")
-        orig_w, orig_h = st.session_state.orig_size
-        draw = ImageDraw.Draw(img_raw)
+        raw_img = Image.open(img_path).convert("RGB")
+        draw_img = raw_img.copy()
+        draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
-
-        # رسم خطوط راهنمای Steiner برای تست دقت
-        draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N Line
-
+        
+        # ترسیم خطوط Steiner
+        draw.line([tuple(l[10]), tuple(l[4]), tuple(l[0])], fill="yellow", width=4)
+        draw.line([tuple(l[4]), tuple(l[2])], fill="cyan", width=4)
+        
         for i, pos in l.items():
-            # تعیین رنگ برای کوررنگی (آبی روشن و بنفش)
-            is_weak = i in [9, 14, 16, 18, 19, 22, 23]
-            color = "#FF0000" if i == target_idx else ("#FF00FF" if is_weak else "#00FFFF")
-            r = int(orig_w * 0.007) # شعاع داینامیک بر اساس سایز عکس
-            
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            # نام لندمارک با کادر ضخیم
-            draw.text((pos[0]+r+2, pos[1]-r), landmark_names[i], fill="yellow", stroke_width=2, stroke_fill="black")
+            c = "red" if i == target_idx else ("orange" if i in weak_landmarks else "#00FF00")
+            r = 15 if i == target_idx else 7
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=c)
 
-        # --- بخش حیاتی: نمایش فیکس شده ---
-        # استفاده از use_container_width=True برای جا شدن کامل در ستون بدون زوم
-        res = streamlit_image_coordinates(img_raw, use_container_width=True, key="precision_v5")
+        st.subheader(f"📍 در حال تنظیم: {landmark_names[target_idx]}")
+        # تعامل سریع با کلیک
+        res = streamlit_image_coordinates(draw_img, width=800, key="aariz_v2")
         
         if res:
-            # محاسبه ضریب مقیاس لحظه‌ای (Real-time Scaling)
-            # استریم‌لیت تصویر را در کادر عرض ستون (col1) جا می‌دهد
-            # ما باید بفهمیم عرض فعلی نمایش داده شده چقدر است
-            actual_display_width = res["width"] 
-            scale = orig_w / actual_display_width
-            
-            new_x = int(res["x"] * scale)
-            new_y = int(res["y"] * scale)
-            
-            if l[target_idx] != [new_x, new_y]:
-                st.session_state.lms[target_idx] = [new_x, new_y]
+            scale = raw_img.width / 800
+            nx, ny = int(res["x"]*scale), int(res["y"]*scale)
+            if l[target_idx] != [nx, ny]:
+                st.session_state.lms[target_idx] = [nx, ny]
                 st.rerun()
 
     with col2:
-        st.header("📊 Orthodontic Analysis")
-        results = get_ortho_analysis(l)
+        st.header("📊 Clinical Report")
+        def angle(p1, p2, p3):
+            v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 2)
         
-        st.metric("SNA (Maxilla)", f"{results['SNA']}°")
-        st.metric("SNB (Mandible)", f"{results['SNB']}°")
-        st.metric("ANB (Relation)", f"{results['ANB']}°")
+        sna = angle(l[10], l[4], l[0])
+        snb = angle(l[10], l[4], l[2])
+        anb = round(sna - snb, 2)
         
-        st.markdown("---")
-        st.subheader("Soft Tissue")
-        st.write(f"Nasolabial Angle: **{results['NLA']}°**")
-        
-        if st.sidebar.button("🔄 Reset to AI Default"):
-            st.session_state.lms, _ = get_prediction(img_full_path, model)
-            st.rerun()
+        st.metric("SNA", f"{sna}°")
+        st.metric("SNB", f"{snb}°")
+        st.metric("ANB", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
+
+        # --- دکمه ذخیره واقعی در دیتابیس ---
+        if st.button("💾 ذخیره نهایی و ثبت در درایو"):
+            p_folder = os.path.join(RESULTS_DIR, selected_file.split('.')[0])
+            if not os.path.exists(p_folder): os.makedirs(p_folder)
             
-        if st.button("💾 Save Final Results"):
+            # ذخیره JSON
+            data = {
+                "patient": selected_file,
+                "timestamp": datetime.now().isoformat(),
+                "landmarks": st.session_state.lms,
+                "measurements": {"SNA": sna, "SNB": snb, "ANB": anb}
+            }
+            with open(os.path.join(p_folder, "data.json"), "w") as f:
+                json.dump(data, f, indent=4)
+            
+            # ذخیره عکس آنالیز شده
+            draw_img.save(os.path.join(p_folder, "analysis.png"))
+            
+            st.success(f"✅ با موفقیت در پوشه {p_folder} ذخیره شد.")
             st.balloons()
-            st.success("Analysis Exported Successfully!")
