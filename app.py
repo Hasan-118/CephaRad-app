@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع (قفل شده) ---
+# --- ۱. ساختار مدل مرجع ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -67,15 +67,18 @@ def get_safe_magnifier(img, coord, size=120):
     top = max(0, min(int(y - size//2), h - size))
     crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
     draw = ImageDraw.Draw(crop)
-    # نشانگر مرکز (ثابت)
     draw.line((180, 200, 220, 200), fill="red", width=2)
     draw.line((200, 180, 200, 220), fill="red", width=2)
     return crop, (left, top)
 
 # --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz Station V3.7", layout="wide")
+st.set_page_config(page_title="Aariz Precision V3.8", layout="wide")
 models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+
+# مقداردهی اولیه به ورژن کلیک
+if "click_version" not in st.session_state:
+    st.session_state.click_version = 0
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
@@ -84,7 +87,7 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("آنالیز هوشمند..."):
+        with st.spinner("AI Ensemble Analysis..."):
             img_input = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
             t = transforms.ToTensor()(img_input).unsqueeze(0).to(device)
             with torch.no_grad():
@@ -102,7 +105,6 @@ if uploaded_file and len(models) == 3:
             
             st.session_state.lms = coords
             st.session_state.file_id = uploaded_file.name
-            st.session_state.last_mag_coord = None # حافظه برای جلوگیری از رانش
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
@@ -110,22 +112,21 @@ if uploaded_file and len(models) == 3:
     
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        # تولید مگنیفایر بر اساس مختصات فعلی لندمارک
         mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
         
-        # ثبت کلیک در مگنیفایر با کلید منحصر به فرد برای هر نقطه
-        res_mag = streamlit_image_coordinates(mag_img, key=f"precision_{target_idx}")
+        # استفاده از ورژن کلیک در KEY برای ریست کردن ویجت بعد از هر جابجایی
+        mag_key = f"mag_{target_idx}_{st.session_state.click_version}"
+        res_mag = streamlit_image_coordinates(mag_img, key=mag_key)
         
         if res_mag:
-            # محاسبه مختصات جدید بر اساس کلیک کاربر در فضای ۴۰۰ پیکسلی مگنیفایر
             scale = 120 / 400
             new_x = int(off_x + (res_mag["x"] * scale))
             new_y = int(off_y + (res_mag["y"] * scale))
             
-            # جلوگیری از رانش خودکار: فقط اگر کلیک جدید با مرکز مگنیفایر (نقطه فعلی) متفاوت بود، جابجا کن
-            current_lms = st.session_state.lms[target_idx]
-            if abs(new_x - current_lms[0]) > 1 or abs(new_y - current_lms[1]) > 1:
+            # فقط اگر واقعاً کلیک جدیدی دور از مرکز انجام شده باشد
+            if abs(new_x - st.session_state.lms[target_idx][0]) > 0 or abs(new_y - st.session_state.lms[target_idx][1]) > 0:
                 st.session_state.lms[target_idx] = [new_x, new_y]
+                st.session_state.click_version += 1 # تغییر ورژن برای ریست کردن ویجت در ران بعدی
                 st.rerun()
 
     with col2:
@@ -144,9 +145,10 @@ if uploaded_file and len(models) == 3:
             m_coord = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
             if st.session_state.lms[target_idx] != m_coord:
                 st.session_state.lms[target_idx] = m_coord
+                st.session_state.click_version += 1
                 st.rerun()
 
-    # --- محاسبات Steiner ---
+    # --- آنالیز Steiner ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
