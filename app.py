@@ -7,16 +7,8 @@ import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-import base64
 
-# بررسی وجود fpdf برای جلوگیری از ModuleNotFoundError
-try:
-    from fpdf import FPDF
-    FPDF_AVAILABLE = True
-except ImportError:
-    FPDF_AVAILABLE = False
-
-# --- ۱. معماری مرجع Aariz (Gold Standard V6.5) ---
+# --- ۱. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -45,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل) ---
+# --- ۲. لودر هوشمند مدل‌ها ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -75,35 +67,35 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V6.7", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V6.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 تنظیمات بیمار")
-patient_name = st.sidebar.text_input("نام بیمار:", "Guest")
-gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس متن:", 1, 10, 3)
+st.sidebar.header("📏 تنظیمات آنالیز")
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001)
+text_scale = st.sidebar.slider("🔤 ابعاد لندمارک:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر Cephalogram:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
+        st.session_state.lms = run_precise_prediction(raw_img, models, device)
+        st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 Micro-Adjustment")
+        st.subheader("🔍 مگنیفایر آنتی-دریفت")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
+        # صلیب مرکزی (Crosshair) ثابت
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
@@ -112,66 +104,83 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 تحلیل گرافیکی (Full Overlay)")
+        st.subheader("🖼 ترسیمات گرافیکی تجمعی (Comprehensive Overlay)")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
+        # --- ترسیم تمامی خطوط طبق استاندارد V6.1 + V6.5 ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27, 12, 13]):
-            # Steiner & Teeth
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
+            # Steiner Lines
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)   # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            # Occ Plane & Teeth Axis (احیا شده)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
             draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2)
-            # McNamara & Soft
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)
-            draw.line([tuple(l[12]), tuple(l[0])], fill="brown", width=2)
-            draw.line([tuple(l[12]), tuple(l[13])], fill="brown", width=2)
-            # N-Perp Line
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)  # Upper Incisor
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # Lower Incisor
+            # Downs & Soft Tissue
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # MP
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)   # E-Line
+            # McNamara
+            draw.line([tuple(l[12]), tuple(l[0])], fill="brown", width=2) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="brown", width=2) # Co-Gn
+            # N-Perpendicular (Manual Dash)
             p_n, p_po, p_or = np.array(l[4]), np.array(l[15]), np.array(l[5])
-            v_perp = np.array([-(p_or[1]-p_po[1]), p_or[0]-p_po[0]]) / (np.linalg.norm(p_or-p_po)+1e-6)
+            v_fh = (p_or - p_po) / (np.linalg.norm(p_or - p_po) + 1e-6)
+            v_perp = np.array([-v_fh[1], v_fh[0]])
             for i in range(0, 500, 20):
                 p1 = p_n + v_perp * i; p2 = p_n + v_perp * (i + 10)
                 draw.line([tuple(p1), tuple(p2)], fill="gray", width=2)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([pos[0]-7, pos[1]-7, pos[0]+7, pos[1]+7], fill=color)
+            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white")
 
         streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
 
-    # --- ۴. محاسبات نهایی (بدون حذفیات) ---
+    # --- ۴. بخش محاسبات و گزارش جامع (تطبیق با V6.1) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-    def get_dist(p1, p2): return round(np.linalg.norm(np.array(p1) - np.array(p2)) * pixel_size, 2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 1)
 
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 1)
     fma = get_ang(l[15], l[5], l[14], l[3])
-    co_a, co_gn = get_dist(l[12], l[0]), get_dist(l[12], l[13]); diff = round(co_gn - co_a, 2)
+    u1_sn = get_ang(l[20], l[21], l[10], l[4])
+    impa = get_ang(l[23], l[17], l[14], l[3])
+    
+    # Wits Calculation
+    p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
+    wits = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("ANB (Steiner)", f"{anb}°")
-    m2.metric("McNamara Diff", f"{diff}mm")
-    m3.metric("FMA Angle", f"{fma}°")
-    m4.metric("Gender", gender)
+    # McNamara
+    co_a, co_gn = np.linalg.norm(np.array(l[12])-np.array(l[0]))*pixel_size, np.linalg.norm(np.array(l[12])-np.array(l[13]))*pixel_size
+    diff = round(co_gn - co_a, 1)
 
-    # --- ۵. خروجی PDF افزایشی با مکانیسم Safety ---
-    st.sidebar.divider()
-    if not FPDF_AVAILABLE:
-        st.sidebar.warning("⚠️ کتابخانه fpdf یافت نشد. لطفاً فایل requirements.txt را در GitHub بسازید.")
-    else:
-        if st.sidebar.button("📥 صدور گزارش PDF"):
-            pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", 'B', 16)
-            pdf.cell(200, 10, txt="Aariz Precision Report", ln=True, align='C')
-            pdf.ln(10); pdf.set_font("Arial", size=12)
-            pdf.cell(200, 10, txt=f"Patient: {patient_name} | Gender: {gender}", ln=True)
-            pdf.cell(200, 10, txt=f"ANB: {anb} | McNamara Diff: {diff} mm", ln=True)
-            pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            b64 = base64.b64encode(pdf_bytes).decode()
-            st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Report.pdf">Download PDF</a>', unsafe_allow_html=True)
-            st.success("✅ گزارش آماده است.")
+    # نمایش متریک‌ها در جدول
+    st.subheader("📊 آنالیز بالینی تجمعی (Steiner, McNamara, Wits)")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.write("**Steletal Analysis**")
+        st.info(f"SNA: {sna}° | SNB: {snb}° | ANB: {anb}°")
+        st.info(f"Wits Appraisal: {round(wits, 1)} mm")
+    with c2:
+        st.write("**Dental Analysis**")
+        st.success(f"U1 to SN: {u1_sn}°")
+        st.success(f"IMPA (L1-MP): {impa}°")
+    with c3:
+        st.write("**McNamara Analysis**")
+        st.warning(f"Co-A: {round(co_a, 1)} mm")
+        st.warning(f"Co-Gn: {round(co_gn, 1)} mm")
+        st.warning(f"Difference: {diff} mm")
+
+    # تحلیل بافت نرم (Ricketts)
+    st.divider()
+    st.subheader("👄 آنالیز بافت نرم و زیبایی")
+    dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8])) + 1e-6) * pixel_size, 1)
+    dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8])) + 1e-6) * pixel_size, 1)
+    
+    st.write(f"• لب بالا تا خط E: **{dist_ls} mm** (نرمال: -4mm)")
+    st.write(f"• لب پایین تا خط E: **{dist_li} mm** (نرمال: -2mm)")
