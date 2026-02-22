@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -78,18 +78,18 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.9.3", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.9.4", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-st.sidebar.header("📏 کالیبراسیون و تنظیمات")
+st.sidebar.header("📏 تنظیمات آنالیز")
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
@@ -102,14 +102,9 @@ if uploaded_file and len(models) == 3:
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    if st.sidebar.button("🔄 Reset Current Point"):
+    if st.sidebar.button("🔄 Reset Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1
-        st.rerun()
-
-    if st.session_state.last_target != target_idx:
-        st.session_state.click_version += 1
-        st.session_state.last_target = target_idx
         st.rerun()
 
     col1, col2 = st.columns([1.2, 2.5])
@@ -132,22 +127,34 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
+        st.subheader("🖼 نمای گرافیکی (Functional Occlusal)")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
-        # Steiner & Wits Drawing
+        # ۱. محاسبه نقاط میانی Functional Occlusal Plane
+        # خلفی: میانگین لندمارک ۱۸ (LMT) و ۲۲ (UMT)
+        # قدامی: میانگین لندمارک ۱۷ (LIT) و ۲۱ (UIT)
+        try:
+            p_post = (np.array(l[18]) + np.array(l[22])) / 2
+            p_ant = (np.array(l[17]) + np.array(l[21])) / 2
+            
+            # رسم خط اپیکال
+            draw.line([tuple(p_post), tuple(p_ant)], fill="white", width=3)
+            
+            # ۲. محاسبات Wits بر اساس خط جدید
+            v_occ = (p_ant - p_post) / (np.linalg.norm(p_ant - p_post) + 1e-6)
+            dist_a = np.dot(np.array(l[0]) - p_post, v_occ)
+            dist_b = np.dot(np.array(l[2]) - p_post, v_occ)
+            wits_mm = (dist_a - dist_b) * pixel_size
+        except:
+            wits_mm = 0
+
+        # Steiner Lines
         if all(k in l for k in [10, 4, 0, 2]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
-            
-            # Wits Line (Occlusal)
-            p_m, p_i = np.array(l[22]), np.array(l[21])
-            draw.line([tuple(p_m), tuple(p_i)], fill="white", width=2)
-            v = (p_i - p_m) / (np.linalg.norm(p_i - p_m) + 1e-6)
-            wits_mm = (np.dot(np.array(l[0]) - p_m, v) - np.dot(np.array(l[2]) - p_m, v)) * pixel_size
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -167,7 +174,7 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- Table ---
+    # --- نتایج نهایی ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
@@ -179,4 +186,4 @@ if uploaded_file and len(models) == 3:
     c1.metric("SNA", f"{sna}°")
     c2.metric("SNB", f"{snb}°")
     c3.metric("ANB", f"{round(sna-snb, 2)}°")
-    c4.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm")
+    c4.metric("Wits (Functional)", f"{round(wits_mm, 2)} mm")
