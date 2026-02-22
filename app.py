@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع کمکی ---
+# --- ۲. لودر و توابع پیش‌بینی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -77,42 +77,16 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. محاسبات آنالیز Wits ---
-def calculate_wits(l_dict):
-    # Wits نیاز به صفحه Occlusal دارد (مثلاً بین دندان‌های مولر و ثنایا)
-    # لندمارک‌های مورد نیاز: UMT (22) و LMT (18) برای خلف، و تماس دندانی UIT/LIT برای قدام
-    # در اینجا از میانگین مولرها و ثنایا برای رسم خط اپیکال استفاده می‌کنیم
-    try:
-        p1 = np.array(l_dict[22]) # Upper Molar
-        p2 = np.array(l_dict[21]) # Upper Incisor Tip
-        
-        # خط Occlusal (L)
-        v = p2 - p1
-        v_unit = v / np.linalg.norm(v)
-        
-        # نقاط A (0) و B (2)
-        A = np.array(l_dict[0])
-        B = np.array(l_dict[2])
-        
-        # تصویر کردن نقاط بر خط (Projection)
-        # AO = p1 + dot(A-p1, v_unit) * v_unit
-        dist_a = np.dot(A - p1, v_unit)
-        dist_b = np.dot(B - p1, v_unit)
-        
-        wits_value = dist_a - dist_b # AO - BO
-        return round(wits_value, 2), p1, p2
-    except:
-        return 0, None, None
-
-# --- ۴. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.9", layout="wide")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V4.9.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-if "click_version" not in st.session_state: st.session_state.click_version = 0
-if "last_target" not in st.session_state: st.session_state.last_target = 0
+# تنظیمات کالیبراسیون در سایدبار
+st.sidebar.header("📏 Calibration Settings")
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", min_value=0.01, max_value=1.0, value=0.1, step=0.001, format="%.4f")
+text_scale = st.sidebar.slider("🔤 Font Scale:", 1, 10, 3)
 
-text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام (Font Scale):", 1, 10, 3)
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
@@ -124,16 +98,11 @@ if uploaded_file and len(models) == 3:
         st.session_state.lms = st.session_state.initial_lms.copy()
         st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
-        st.session_state.click_version += 1
-        st.rerun()
-
-    if st.session_state.last_target != target_idx:
-        st.session_state.click_version += 1
-        st.session_state.last_target = target_idx
+        st.session_state.click_version = st.session_state.get("click_version", 0) + 1
         st.rerun()
 
     col1, col2 = st.columns([1.2, 2.5])
@@ -146,70 +115,62 @@ if uploaded_file and len(models) == 3:
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}")
         if res_mag:
             scale_mag = size_m / 400
             new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c
-                st.session_state.click_version += 1
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی (Steiner + Wits)")
+        st.subheader("🖼 Full Analysis View")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
         # Steiner Lines
         if all(k in l for k in [10, 4, 0, 2]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
 
-        # Wits Occlusal Line
-        w_val, p_back, p_front = calculate_wits(l)
-        if p_back is not None:
-            # امتداد خط برای نمایش بهتر
-            draw.line([tuple(p_back), tuple(p_front)], fill="white", width=2)
+        # Wits Calculation
+        try:
+            p_molar, p_incisor = np.array(l[22]), np.array(l[21])
+            v_occl = (p_incisor - p_molar) / np.linalg.norm(p_incisor - p_molar)
+            dist_a = np.dot(np.array(l[0]) - p_molar, v_occl)
+            dist_b = np.dot(np.array(l[2]) - p_molar, v_occl)
+            wits_px = dist_a - dist_b
+            wits_mm = wits_px * pixel_size
+            draw.line([tuple(l[22]), tuple(l[21])], fill="white", width=2)
+        except:
+            wits_mm = 0
 
         for i, pos in l.items():
-            is_act = (i == target_idx)
-            color = (255, 0, 0) if is_act else (0, 255, 0)
-            r = 10 if is_act else 6
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
+            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white")
             
+            # Label Scaling
             name_text = landmark_names[i]
             temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            temp_draw = ImageDraw.Draw(temp_txt)
-            temp_draw.text((0, 0), name_text, fill=color)
-            new_w, new_h = int(temp_txt.width * text_scale), int(temp_txt.height * text_scale)
-            scaled_txt = temp_txt.resize((new_w, new_h), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
+            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
+            draw_img.paste(scaled_txt, (pos[0]+15, pos[1]-10), scaled_txt)
 
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            c_scale = W / 850
-            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c
-                st.session_state.click_version += 1
-                st.rerun()
+        streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
 
-    # --- Calculations ---
+    # --- Results Table ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        norm = np.linalg.norm(v1)*np.linalg.norm(v2)
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1))), 2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
-    sna = get_ang(l[10], l[4], l[0])
-    snb = get_ang(l[10], l[4], l[2])
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{round(sna-snb, 2)}°")
-    c4.metric("Wits Appraisal", f"{w_val} px")
-    
-    st.info("💡 مقدار Wits در حال حاضر بر اساس پیکسل گزارش شده است. پس از کالیبراسیون با خط‌کش، به میلی‌متر تبدیل خواهد شد.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("SNA", f"{sna}°")
+    m2.metric("SNB", f"{snb}°")
+    m3.metric("ANB", f"{round(sna-snb, 2)}°")
+    m4.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", delta=f"{round(wits_px, 1)} px")
