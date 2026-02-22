@@ -4,11 +4,11 @@ import torch.nn as nn
 import numpy as np
 import os
 import gdown
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -71,22 +71,19 @@ def get_safe_magnifier(img, coord, size=120):
     draw.line((200, 180, 200, 220), fill="red", width=3)
     return crop, (left, top)
 
-# --- ۳. منطق پیش‌بینی با دقت Letterboxing (دقیقاً مطابق کد درخواستی شما) ---
+# --- ۳. منطق پیش‌بینی با دقت Letterboxing ---
 def run_precise_prediction(img_pil, models, device):
     ow, oh = img_pil.size
     img_gray = img_pil.convert('L')
     ratio = 512 / max(ow, oh)
     nw, nh = int(ow * ratio), int(oh * ratio)
     img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    
     canvas = Image.new("L", (512, 512))
     px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py))
-    
     input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
     with torch.no_grad():
         outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     coords = {}
     for i in range(29):
@@ -98,20 +95,20 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۴. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Precision Station V4.0", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.1", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("استخراج لندمارک با دقت بالا..."):
+        with st.spinner("استخراج لندمارک با دقت Letterboxing..."):
             st.session_state.lms = run_precise_prediction(raw_img, models, device)
             st.session_state.file_id = uploaded_file.name
 
@@ -131,21 +128,32 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full View & Steiner Analysis")
+        st.subheader("🖼 نمای زنده و آنالیز Steiner")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
         # ترسیم خطوط Steiner
         if all(k in l for k in [10, 4, 0, 2]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=4) # SN
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)   # NA
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)# NB
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=4)
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
 
+        # رسم لندمارک‌ها و نام آن‌ها
         for i, pos in l.items():
             color = "red" if i == target_idx else "#00FF00"
             r = 15 if i == target_idx else 8
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            
+            # نمایش نام نقطه در کنار آن
+            # استفاده از سایز داینامیک متن بر اساس ابعاد تصویر
+            text_size = max(20, int(W / 60))
+            try:
+                font = ImageFont.truetype("arial.ttf", text_size)
+            except:
+                font = ImageFont.load_default()
+            
+            draw.text((pos[0] + r + 5, pos[1] - r), landmark_names[i], fill=color, font=font)
         
         res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
         if res_main:
@@ -156,7 +164,7 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- گزارش نهایی ---
+    # --- محاسبات نهایی ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
@@ -168,5 +176,3 @@ if uploaded_file and len(models) == 3:
     c1.metric("SNA", f"{sna}°")
     c2.metric("SNB", f"{snb}°")
     c3.metric("ANB", f"{round(sna-snb, 2)}°")
-    if st.sidebar.button("💾 ذخیره آنالیز"):
-        st.sidebar.success("اطلاعات با موفقیت ذخیره شد.")
