@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -67,7 +67,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V5.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V5.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -99,7 +99,6 @@ if uploaded_file and len(models) == 3:
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        # نشانگر قرمز (تضمین حضور)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
@@ -108,28 +107,42 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
+        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
+        
+        # --- رسم خطوط (تضمین حضور تمام خطوط گرافیکی) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
-            v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-            wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-        else: wits_mm = 0
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Functional Occ
+            
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # Frankfort (Po-Or)
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular (Go-Me)
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1 Axis
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1 Axis
+
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            
+            # نام لندمارک‌ها (تضمین حضور)
+            name_text = landmark_names[i]
+            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
+            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
+            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. تفسیر و نقشه راه درمان (Strategic Roadmap) ---
+    # --- ۴. محاسبات و نمایش اعداد (تضمین حضور تمامی اعداد و زوایا) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -138,26 +151,37 @@ if uploaded_file and len(models) == 3:
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3]); interinc = get_ang(l[20], l[21], l[23], l[17])
     
-    st.header("🩺 نقشه راه درمان (Treatment Roadmap)")
-    
+    # محاسبه Wits (تضمین حضور)
+    p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
+    wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
+
+    # نمایش اعداد در جدول (Metric)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
+    m2.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
+    m3.metric("Downs (FMA)", f"{fma}°")
+    m4.metric("Interincisal", f"{interinc}°")
+
+    # --- ۵. گزارش و نقشه راه درمان (Strategic Roadmap) ---
+    st.divider()
+    st.header("📑 تفسیر بالینی و نقشه راه درمان")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("💡 رویکرد استراتژیک")
-        plan = []
-        if anb > 5 or wits_mm > 2: plan.append("• **Class II Correction:** نیاز به رتروژن ماکسیلا یا پروتروژن مندیبل.")
-        elif anb < 0 or wits_mm < -2: plan.append("• **Class III Correction:** بررسی نیاز به جراحی فک یا فیس‌ماسک (در سن رشد).")
+        st.subheader("💡 تشخیص و طرح درمان")
+        w_norm = 0 if gender == "آقا (Male)" else -1
+        w_diff = wits_mm - w_norm
+        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
+        st.write(f"• **Skeletal Status:** {diag} ({gender})")
         
-        if fma > 32: plan.append("• **High Angle Warning:** کنترل شدید بعد عمودی؛ اجتناب از اکستروژن مولرها.")
-        elif fma < 20: plan.append("• **Low Angle:** پتانسیل بالای دیپ‌بایت؛ امکان اکستروژن مولرها برای باز کردن بایت.")
+        if fma > 32: st.warning("• **High Angle:** کنترل عمودی ضروری است.")
+        elif fma < 20: st.info("• **Low Angle:** پتانسیل دیپ‌بایت.")
         
-        if interinc < 120: plan.append("• **Protrusion Management:** بررسی نیاز به کشیدن دندان (Extraction) برای اصلاح لیب ورشن.")
-        
-        if not plan: plan.append("• پارامترها در محدوده نرمال هستند. طرح درمان متمرکز بر ردیف کردن دندان‌ها (Alignment).")
-        st.write("\n".join(plan))
+        if interinc < 125: st.error("• **Bidentoalveolar Protrusion:** نیاز به کاهش لیب‌ورشن.")
 
     with c2:
-        st.subheader("🚨 ملاحظات جراحی vs ارتودنسی")
+        st.subheader("🚨 ملاحظات جراحی")
         if abs(anb) > 7 or abs(wits_mm) > 5:
-            st.error("⚠️ **Surgical Borderline:** شدت دیسکرپانسی فکی احتمالاً فراتر از ارتودنسی جبرانی (Camouflage) است.")
+            st.error("⚠️ مورد بیمار احتمالاً در محدوده جراحی فک (Surgical) قرار دارد.")
         else:
-            st.success("✅ **Orthodontic Range:** روابط فکی احتمالاً با ارتودنسی و مکانوتراپی قابل اصلاح است.")
+            st.success("✅ مورد بیمار احتمالاً با ارتودنسی جبرانی قابل درمان است.")
