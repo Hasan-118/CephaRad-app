@@ -67,7 +67,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V6.0", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V6.1", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -75,7 +75,7 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
-gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 
@@ -110,7 +110,6 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- رسم تمامی خطوط (تضمین عدم حذف) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
@@ -121,8 +120,7 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
             draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
             draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
-            # --- خط جدید افزایشی: E-Line ---
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # Pn to Pog`
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -140,7 +138,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و نمایش متریک‌ها (تضمین عدم حذف) ---
+    # --- ۴. محاسبات و تفسیر هوشمند بر اساس جنسیت ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -155,35 +153,45 @@ if uploaded_file and len(models) == 3:
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
     
-    # محاسبات بافت نرم (افزایشی)
+    # تنظیم نرمال‌ها بر اساس جنسیت
+    wits_norm = 0 if gender == "آقا (Male)" else -1
+    ls_norm = -4 # Upper lip to E-line (تقریباً مشابه در هر دو جنس)
+    li_norm = -2 # Lower lip to E-line
+
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
-    m2.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
+    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
     m3.metric("Downs (FMA)", f"{fma}°")
-    m4.metric("Interincisal", f"{interinc}°")
+    m4.metric("Soft Tissue (Li)", f"{dist_li}mm", f"Norm: {li_norm}mm")
 
-    # --- ۵. گزارش جامع و نقشه راه درمان (تضمین عدم حذف) ---
+    # --- ۵. گزارش جامع و نقشه راه درمان اختصاصی (Gender-Aware) ---
     st.divider()
-    st.header("📑 گزارش بالینی و آنالیز بافت نرم")
+    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 Soft Tissue Analysis (Ricketts)")
-        st.write(f"• Upper Lip to E-Line: **{dist_ls} mm** (Normal: -4mm)")
-        st.write(f"• Lower Lip to E-Line: **{dist_li} mm** (Normal: -2mm)")
-        if dist_li > 0: st.warning("⚠️ لب پایین جلوتر از خط زیبایی (E-Line) است.")
+        st.subheader("👄 تحلیل بافت نرم و زیبایی")
+        st.write(f"• لب بالا تا خط E: **{dist_ls} mm** (هدف: {ls_norm}mm)")
+        st.write(f"• لب پایین تا خط E: **{dist_li} mm** (هدف: {li_norm}mm)")
         
-        st.subheader("💡 نقشه راه درمان")
-        w_norm = 0 if gender == "آقا (Male)" else -1
-        w_diff = wits_mm - w_norm
-        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• **تشخیص اسکلتال:** {diag} بر پایه Wits")
-        if abs(anb) > 7: st.error("• پتانسیل نیاز به جراحی فک بالا است.")
+        # تفسیر زیبایی بر اساس جنسیت (آقایان معمولاً لب‌های عقب‌تر و چانه قوی‌تری دارند)
+        if gender == "آقا (Male)" and dist_li > 0:
+            st.warning("⚠️ نیم‌رخ محدب (Convex)؛ لب پایین نسبت به چانه مردانه جلوتر است.")
+        elif gender == "خانم (Female)" and dist_li > 1:
+            st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
 
+        st.subheader("💡 نقشه راه درمان")
+        w_diff = wits_mm - wits_norm
+        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
+        st.write(f"• **وضعیت فکی:** {diag} (تطبیق یافته با نرمال {gender})")
+        
     with c2:
-        st.subheader("📐 تحلیل رشد")
+        st.subheader("📐 تحلیل زوایا و رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی رشد: **{fma_desc}**")
-        if interinc < 125: st.warning("• بیرون‌زدگی دندان‌ها (Protrusion) مشهود است.")
+        st.write(f"• الگوی اسکلتال: **{fma_desc}**")
+        if abs(anb) > 8:
+            st.error(f"🚨 شدت دیسکرپانسی در این {gender} بالا است؛ مشاوره جراحی توصیه می‌شود.")
+        else:
+            st.success("✅ امکان اصلاح با مکانوتراپی ارتودنسی.")
