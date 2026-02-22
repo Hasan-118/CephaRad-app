@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع کمکی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -78,16 +78,18 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.9.2", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.9.3", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-# تنظیمات کالیبراسیون در سایدبار
-st.sidebar.header("📏 Calibration Settings")
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", min_value=0.01, max_value=1.0, value=0.1, step=0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 Font Scale:", 1, 10, 3)
+if "click_version" not in st.session_state: st.session_state.click_version = 0
+if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+st.sidebar.header("📏 کالیبراسیون و تنظیمات")
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
+text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام:", 1, 10, 3)
+
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
@@ -102,7 +104,12 @@ if uploaded_file and len(models) == 3:
     
     if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
-        st.session_state.click_version = st.session_state.get("click_version", 0) + 1
+        st.session_state.click_version += 1
+        st.rerun()
+
+    if st.session_state.last_target != target_idx:
+        st.session_state.click_version += 1
+        st.session_state.last_target = target_idx
         st.rerun()
 
     col1, col2 = st.columns([1.2, 2.5])
@@ -115,52 +122,52 @@ if uploaded_file and len(models) == 3:
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}")
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
             scale_mag = size_m / 400
             new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c
+                st.session_state.click_version += 1
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full Analysis View")
+        st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
-        # Steiner Lines
+        # Steiner & Wits Drawing
         if all(k in l for k in [10, 4, 0, 2]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
-
-        # Wits Calculation
-        try:
-            p_molar, p_incisor = np.array(l[22]), np.array(l[21])
-            v_occl = (p_incisor - p_molar) / np.linalg.norm(p_incisor - p_molar)
-            dist_a = np.dot(np.array(l[0]) - p_molar, v_occl)
-            dist_b = np.dot(np.array(l[2]) - p_molar, v_occl)
-            wits_px = dist_a - dist_b
-            wits_mm = wits_px * pixel_size
-            draw.line([tuple(l[22]), tuple(l[21])], fill="white", width=2)
-        except:
-            wits_mm = 0
+            
+            # Wits Line (Occlusal)
+            p_m, p_i = np.array(l[22]), np.array(l[21])
+            draw.line([tuple(p_m), tuple(p_i)], fill="white", width=2)
+            v = (p_i - p_m) / (np.linalg.norm(p_i - p_m) + 1e-6)
+            wits_mm = (np.dot(np.array(l[0]) - p_m, v) - np.dot(np.array(l[2]) - p_m, v)) * pixel_size
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white")
-            
-            # Label Scaling
+            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white", width=2)
             name_text = landmark_names[i]
             temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
             ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
             scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
             draw_img.paste(scaled_txt, (pos[0]+15, pos[1]-10), scaled_txt)
 
-        streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
+        if res_main:
+            c_scale = W / 850
+            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c
+                st.session_state.click_version += 1
+                st.rerun()
 
-    # --- Results Table ---
+    # --- Table ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
@@ -168,9 +175,8 @@ if uploaded_file and len(models) == 3:
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-    
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("SNA", f"{sna}°")
-    m2.metric("SNB", f"{snb}°")
-    m3.metric("ANB", f"{round(sna-snb, 2)}°")
-    m4.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", delta=f"{round(wits_px, 1)} px")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("SNA", f"{sna}°")
+    c2.metric("SNB", f"{snb}°")
+    c3.metric("ANB", f"{round(sna-snb, 2)}°")
+    c4.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm")
