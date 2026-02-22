@@ -78,14 +78,13 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.7", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-# اسلایدر مخصوص سایز "نام" لندمارک (مقیاس گرافیکی)
 text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام (Font Scale):", 1, 10, 3)
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
@@ -95,11 +94,19 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.lms = run_precise_prediction(raw_img, models, device)
+        # ذخیره پیش‌بینی اولیه برای قابلیت Reset
+        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
+        st.session_state.lms = st.session_state.initial_lms.copy()
         st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
+    # دکمه ریست نقطه
+    if st.sidebar.button("🔄 Reset Current Point"):
+        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
+        st.session_state.click_version += 1
+        st.rerun()
+
     if st.session_state.last_target != target_idx:
         st.session_state.click_version += 1
         st.session_state.last_target = target_idx
@@ -110,7 +117,8 @@ if uploaded_file and len(models) == 3:
     with col1:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]
-        size_m = 120
+        # زوم کمتر (نمای بازتر) با افزایش size_m از 120 به 180
+        size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
@@ -130,7 +138,6 @@ if uploaded_file and len(models) == 3:
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
-        # Steiner Lines
         if all(k in l for k in [10, 4, 0, 2]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=4)
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
@@ -142,18 +149,12 @@ if uploaded_file and len(models) == 3:
             r = 10 if is_act else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # --- متد Scaling قطعی برای نام‌ها ---
             name_text = landmark_names[i]
-            # ۱. رسم متن در یک لایه کوچک
             temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
             temp_draw = ImageDraw.Draw(temp_txt)
             temp_draw.text((0, 0), name_text, fill=color)
-            
-            # ۲. بزرگنمایی گرافیکی لایه متن بر اساس اسلایدر
             new_w, new_h = int(temp_txt.width * text_scale), int(temp_txt.height * text_scale)
             scaled_txt = temp_txt.resize((new_w, new_h), Image.NEAREST)
-            
-            # ۳. چسباندن نام بزرگ شده روی تصویر اصلی
             draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
