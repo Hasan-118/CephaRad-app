@@ -78,15 +78,15 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.6", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.7", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-# اسلایدر مخصوص سایز "نام" نقاط (مقدار دهی مستقیم)
-font_size = st.sidebar.slider("🔤 سایز نام لندمارک:", 15, 80, 40)
+# اسلایدر مخصوص سایز "نام" لندمارک (مقیاس گرافیکی)
+text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام (Font Scale):", 1, 10, 3)
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
@@ -105,7 +105,7 @@ if uploaded_file and len(models) == 3:
         st.session_state.last_target = target_idx
         st.rerun()
 
-    col1, col2 = st.columns([1.2, 2])
+    col1, col2 = st.columns([1.2, 2.5])
     
     with col1:
         st.subheader("🔍 Micro-Adjustment")
@@ -125,7 +125,7 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای کامل (اسامی بزرگ)")
+        st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -138,14 +138,23 @@ if uploaded_file and len(models) == 3:
 
         for i, pos in l.items():
             is_act = (i == target_idx)
-            color = "red" if is_act else "#00FF00"
+            color = (255, 0, 0) if is_act else (0, 255, 0)
             r = 10 if is_act else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # ترسیم نام با فونت پیش‌فرض (استفاده از ترفند سایه برای خوانایی)
-            # در صورتی که فونت لود نشد، دایره‌ای دور نام کشیده می‌شود
-            draw.text((pos[0]+r+7, pos[1]-r+2), landmark_names[i], fill="black") # Shadow
-            draw.text((pos[0]+r+5, pos[1]-r), landmark_names[i], fill=color)
+            # --- متد Scaling قطعی برای نام‌ها ---
+            name_text = landmark_names[i]
+            # ۱. رسم متن در یک لایه کوچک
+            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
+            temp_draw = ImageDraw.Draw(temp_txt)
+            temp_draw.text((0, 0), name_text, fill=color)
+            
+            # ۲. بزرگنمایی گرافیکی لایه متن بر اساس اسلایدر
+            new_w, new_h = int(temp_txt.width * text_scale), int(temp_txt.height * text_scale)
+            scaled_txt = temp_txt.resize((new_w, new_h), Image.NEAREST)
+            
+            # ۳. چسباندن نام بزرگ شده روی تصویر اصلی
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -156,19 +165,14 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- Metrics ---
+    # --- Calculations ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         norm = np.linalg.norm(v1)*np.linalg.norm(v2)
-        if norm == 0: return 0.0
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 2)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1))), 2)
 
     sna = get_ang(l[10], l[4], l[0])
     snb = get_ang(l[10], l[4], l[2])
-    anb = round(sna - snb, 2)
-    
     c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{anb}°")
+    c1.metric("SNA", f"{sna}°"); c2.metric("SNB", f"{snb}°"); c3.metric("ANB", f"{round(sna-snb, 2)}°")
