@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (حفظ کامل ساختار) ---
+# --- ۱. معماری مرجع Aariz (بدون هیچ تغییری) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل) ---
+# --- ۲. لودر و توابع کمکی (حفظ کامل قابلیت‌ها) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -77,42 +77,53 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. توابع محاسباتی (تجمیع Steiner, Wits, Downs) ---
-def get_angle(p1, p2, p3):
-    v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-    norm = np.linalg.norm(v1)*np.linalg.norm(v2)
-    if norm == 0: return 0
-    return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/norm, -1, 1))), 2)
-
-# --- ۴. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V5.1", layout="wide")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V5.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
-st.sidebar.header("📏 کالیبراسیون")
+if "last_target" not in st.session_state: st.session_state.last_target = 0
+
+st.sidebar.header("📏 تنظیمات آنالیز")
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
     W, H = raw_img.size
+    
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy()
         st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
+    # دکمه Reset (دقیقاً مشابه مرجع)
+    if st.sidebar.button("🔄 Reset Current Point"):
+        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
+        st.session_state.click_version += 1
+        st.rerun()
+
+    # مدیریت تغییر لندمارک (دقیقاً مشابه مرجع)
+    if st.session_state.last_target != target_idx:
+        st.session_state.click_version += 1
+        st.session_state.last_target = target_idx
+        st.rerun()
+
     col1, col2 = st.columns([1.2, 2.5])
+    
     with col1:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]
         size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_draw = ImageDraw.Draw(mag_crop)
+        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
             scale_mag = size_m / 400
@@ -123,51 +134,62 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی جامع")
+        st.subheader("🖼 نمای گرافیکی جامع (Steiner + Wits + Downs)")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ۱. Steiner & Functional Wits (بدون تغییر)
-        if all(k in l for k in [10, 4, 0, 2, 22, 18, 21, 17]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
-            p_occ_p, p_occ_a = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Functional Occlusal Plane
-            
-            # محاسبات Wits
+        # ۱. Steiner Lines (مرجع)
+        if all(k in l for k in [10, 4, 0, 2]):
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+
+        # ۲. Functional Occlusal & Wits (مرجع V4.9.4)
+        try:
+            p_occ_p = (np.array(l[18]) + np.array(l[22])) / 2
+            p_occ_a = (np.array(l[17]) + np.array(l[21])) / 2
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
             v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
             wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-            
-        # ۲. Downs Lines (اضافه شده)
-        if all(k in l for k in [15, 5, 4, 6, 0]):
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH Plane
-            draw.line([tuple(l[4]), tuple(l[6])], fill="blue", width=2) # N-Pog
+        except: wits_mm = 0
+
+        # ۳. Downs Skeletal Lines (قابلیت جدید)
+        if all(k in l for k in [15, 5, 4, 6]):
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # Frankfort (Po-Or)
+            draw.line([tuple(l[4]), tuple(l[6])], fill="blue", width=2)   # Facial Plane (N-Pog)
             draw.line([tuple(l[4]), tuple(l[0]), tuple(l[6])], fill="green", width=2) # Convexity
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white", width=2)
+            r = 10 if i == target_idx else 6
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             name_text = landmark_names[i]
             temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
             ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
             scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+15, pos[1]-10), scaled_txt)
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 850
-            new_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c
+            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- نمایش نتایج تجمیعی ---
+    # --- ۴. محاسبات نهایی (تجمیعی) ---
     st.divider()
-    sna, snb = get_angle(l[10], l[4], l[0]), get_angle(l[10], l[4], l[2])
-    facial_ang = get_angle(l[15], l[5], l[6]) # FH to N-Pog
-    convexity = get_angle(l[4], l[0], l[6]) # N-A-Pog
+    def get_ang(p1, p2, p3):
+        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
+    f_angle = get_ang(l[15], l[5], l[6]) # Po-Or-Pog (Downs Facial Angle)
+    conv_angle = get_ang(l[4], l[0], l[6]) # N-A-Pog (Convexity)
     
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("Steiner (ANB)", f"{round(sna-snb, 2)}°", f"SNA:{sna} SNB:{snb}")
-    col_b.metric("Wits (Functional)", f"{round(wits_mm, 2)} mm")
-    col_c.metric("Facial Angle (Downs)", f"{facial_ang}°")
-    col_d.metric("Convexity (Downs)", f"{convexity}°")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Steiner (ANB)", f"{round(sna-snb, 2)}°", f"SNA: {sna}, SNB: {snb}")
+    c2.metric("Wits (Functional)", f"{round(wits_mm, 2)} mm")
+    c3.metric("Facial Angle", f"{f_angle}°")
+    c4.metric("Convexity", f"{conv_angle}°")
