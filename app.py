@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. بارگذاری مدل‌ها و توابع کمکی ---
+# --- ۲. لودر و توابع کمکی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -63,15 +63,12 @@ def load_aariz_models():
 def get_safe_magnifier(img, coord, size=120):
     w, h = img.size
     x, y = coord
-    left = max(0, min(int(x - size//2), w - size))
-    top = max(0, min(int(y - size//2), h - size))
+    left, top = max(0, min(int(x - size//2), w - size)), max(0, min(int(y - size//2), h - size))
     crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
     draw = ImageDraw.Draw(crop)
-    draw.line((180, 200, 220, 200), fill="red", width=3)
-    draw.line((200, 180, 200, 220), fill="red", width=3)
+    draw.line((180, 200, 220, 200), fill="red", width=3); draw.line((200, 180, 200, 220), fill="red", width=3)
     return crop, (left, top)
 
-# --- ۳. منطق پیش‌بینی با دقت Letterboxing ---
 def run_precise_prediction(img_pil, models, device):
     ow, oh = img_pil.size
     img_gray = img_pil.convert('L')
@@ -87,28 +84,29 @@ def run_precise_prediction(img_pil, models, device):
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     coords = {}
     for i in range(29):
-        if i in ANT_IDX: hm = outs[1][i]
-        elif i in POST_IDX: hm = outs[2][i]
-        else: hm = outs[0][i]
+        hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۴. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Precision Station V4.1", layout="wide")
+# --- ۳. رابط کاربری نهایی ---
+st.set_page_config(page_title="Aariz Precision Station V4.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+# اسلایدر برای تنظیم سایز نام لندمارک‌ها
+label_size = st.sidebar.slider("📏 سایز نام لندمارک:", 15, 60, 35)
+
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("استخراج لندمارک با دقت Letterboxing..."):
+        with st.spinner("AI Prediction..."):
             st.session_state.lms = run_precise_prediction(raw_img, models, device)
             st.session_state.file_id = uploaded_file.name
 
@@ -128,31 +126,29 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای زنده و آنالیز Steiner")
+        st.subheader("🖼 Full View & Steiner Analysis")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
-        # ترسیم خطوط Steiner
+        # Steiner Lines
         if all(k in l for k in [10, 4, 0, 2]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=4)
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
 
-        # رسم لندمارک‌ها و نام آن‌ها
+        # Drawing Landmarks and Labels
         for i, pos in l.items():
             color = "red" if i == target_idx else "#00FF00"
             r = 15 if i == target_idx else 8
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # نمایش نام نقطه در کنار آن
-            # استفاده از سایز داینامیک متن بر اساس ابعاد تصویر
-            text_size = max(20, int(W / 60))
-            try:
-                font = ImageFont.truetype("arial.ttf", text_size)
-            except:
-                font = ImageFont.load_default()
+            # نمایش نام با سایز بزرگتر و سایه برای خوانایی
+            try: font = ImageFont.truetype("arial.ttf", label_size)
+            except: font = ImageFont.load_default()
             
+            # رسم سایه مشکی پشت متن برای خوانایی در نقاط روشن
+            draw.text((pos[0] + r + 7, pos[1] - r + 2), landmark_names[i], fill="black", font=font)
             draw.text((pos[0] + r + 5, pos[1] - r), landmark_names[i], fill=color, font=font)
         
         res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
@@ -164,7 +160,7 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- محاسبات نهایی ---
+    # --- Metrics ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
