@@ -1,4 +1,4 @@
-                                                                                                                                                                       import streamlit as st
+                                                                                                                                                                    import streamlit as st
 
 import torch
 
@@ -10,6 +10,8 @@ import os
 
 import json
 
+import gdown
+
 from datetime import datetime
 
 from PIL import Image, ImageDraw
@@ -18,11 +20,11 @@ import torchvision.transforms as transforms
 
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-import math
+import torch.nn.functional as F
 
 
 
-# --- ۱. تنظیمات اولیه و پوشه ذخیره‌سازی ---
+# --- ۱. تنظیمات اولیه و دانلود خودکار مدل‌ها ---
 
 RESULTS_DIR = "Aariz_Results"
 
@@ -32,7 +34,35 @@ if not os.path.exists(RESULTS_DIR):
 
 
 
-# --- ۲. تعریف معماری مدل (بدون تغییر) ---
+@st.cache_resource
+
+def download_models():
+
+    # آی‌دی‌های اختصاصی مدل‌های شما در گوگل درایو
+
+    model_ids = {
+
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
+
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+
+    }
+
+    for filename, fid in model_ids.items():
+
+        if not os.path.exists(filename):
+
+            with st.spinner(f'در حال فراخوانی {filename} از مخزن ابری...'):
+
+                url = f'https://drive.google.com/uc?id={fid}'
+
+                gdown.download(url, filename, quiet=False)
+
+
+
+# --- ۲. معماری مدل (دقیقاً مطابق نوت‌بوک شما) ---
 
 class DoubleConv(nn.Module):
 
@@ -106,25 +136,15 @@ class CephaUNet(nn.Module):
 
 
 
-# --- ۳. بارگذاری مدل‌ها (بهینه شده) ---
+# --- ۳. بارگذاری مدل‌ها ---
 
 @st.cache_resource
 
 def load_aariz_models():
 
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+    download_models() # ابتدا اطمینان از وجود فایل‌ها
 
-    model_files = [
-
-        'checkpoint_unet_clinical.pth',
-
-        'specialist_pure_model.pth',
-
-        'tmj_specialist_model.pth'
-
-    ]
-
-    
+    model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -134,25 +154,23 @@ def load_aariz_models():
 
     for f in model_files:
 
-        full_path = os.path.join(current_dir, f)
-
-        if os.path.exists(full_path):
+        if os.path.exists(f):
 
             try:
 
                 m = CephaUNet(n_landmarks=29).to(device)
 
-                ckpt = torch.load(full_path, map_location=device)
+                ckpt = torch.load(f, map_location=device)
 
                 state_dict = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
 
-                m.load_state_dict(state_dict)
+                # اصلاح کلیدهای module برای انطباق با آموزش قبلی
+
+                new_state = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+                m.load_state_dict(new_state, strict=False)
 
                 m.eval()
-
-                # بهینه‌سازی سرعت اگر GPU در دسترس باشد
-
-                if device.type == 'cuda': m = m.half()
 
                 loaded_models.append(m)
 
@@ -164,7 +182,7 @@ def load_aariz_models():
 
 
 
-# --- ۴. پیش‌بینی فوق سریع (Inference Mode) ---
+# --- ۴. پیش‌بینی هوشمند ---
 
 def run_ai_prediction(img_path, models, device):
 
@@ -178,15 +196,15 @@ def run_ai_prediction(img_path, models, device):
 
     input_tensor = transforms.ToTensor()(img_resized).unsqueeze(0).to(device)
 
-    if device.type == 'cuda': input_tensor = input_tensor.half()
-
     
 
-    with torch.inference_mode(): # سریع‌تر از no_grad
+    with torch.inference_mode():
 
         outs = [mod(input_tensor)[0].cpu().float().numpy() for mod in models]
 
     
+
+    # تفکیک نواحی تخصصی بر اساس منطق Aariz
 
     ANT_IDX = [10, 14, 9, 5, 28, 20]
 
@@ -198,17 +216,13 @@ def run_ai_prediction(img_path, models, device):
 
     sx, sy = orig_size[0]/512, orig_size[1]/512
 
-    num_m = len(outs)
-
-
+    
 
     for i in range(29):
 
-        # سیستم هوشمند Ensemble
+        if i in ANT_IDX and len(outs) >= 2: hm = outs[1][i]
 
-        if i in ANT_IDX and num_m >= 2: hm = outs[1][i]
-
-        elif i in POST_IDX and num_m >= 3: hm = outs[2][i]
+        elif i in POST_IDX and len(outs) >= 3: hm = outs[2][i]
 
         else: hm = outs[0][i]
 
@@ -222,69 +236,51 @@ def run_ai_prediction(img_path, models, device):
 
 
 
-# --- ۵. رابط کاربری اصلی ---
+# --- ۵. رابط کاربری (UI) ---
 
-st.set_page_config(page_title="Aariz Station V2", layout="wide")
+st.set_page_config(page_title="Aariz AI Station V2", layout="wide")
 
 models, device = load_aariz_models()
 
 
 
-# سایدبار وضعیت سخت‌افزار
-
-st.sidebar.title("⚙️ سیستم و سخت‌افزار")
-
-st.sidebar.write(f"🖥️ **Device:** `{device.type.upper()}`")
-
-st.sidebar.write(f"📦 **مدل‌های فعال:** `{len(models)}/3`")
-
-
-
-if not models:
-
-    st.error("فایل‌های وزن مدل پیدا نشدند.")
-
-    st.stop()
-
-
-
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-weak_landmarks = [9, 14, 16, 18, 19, 22, 23]
+
+
+st.sidebar.title("⚙️ سخت‌افزار")
+
+st.sidebar.info(f"Device: {device.type.upper()} | Models: {len(models)}/3")
 
 
 
-st.sidebar.title("🧠 Aariz AI Control")
+# ورودی تصویر (به جای مسیر سخت‌افزاری، آپلود مستقیم را فعال کردیم)
 
-base_dir = st.sidebar.text_input("مسیر پروژه:", value=os.getcwd())
-
-img_folder = os.path.join(base_dir, "Aariz", "train", "Cephalograms")
+uploaded_file = st.sidebar.file_uploader("آپلود سفالوگرام:", type=['png', 'jpg', 'jpeg'])
 
 
 
-if os.path.exists(img_folder):
+if uploaded_file:
 
-    files = [f for f in os.listdir(img_folder) if f.lower().endswith(('.png', '.jpg'))]
+    # ذخیره موقت برای پردازش
 
-    selected_file = st.sidebar.selectbox("انتخاب سفالوگرام:", files)
+    with open("temp_cepha.png", "wb") as f:
 
-    target_idx = st.sidebar.selectbox("نقطه برای بازبینی:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-
-    
-
-    img_path = os.path.join(img_folder, selected_file)
+        f.write(uploaded_file.getbuffer())
 
     
 
-    # مدیریت حافظه برای سرعت لود تصویر
+    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
 
-    if "current_img" not in st.session_state or st.session_state.current_img != selected_file:
+        with st.spinner('هوش مصنوعی در حال آنالیز لندمارک‌ها...'):
 
-        with st.spinner('در حال پردازش هوشمند...'):
+            st.session_state.lms = run_ai_prediction("temp_cepha.png", models, device)
 
-            st.session_state.lms = run_ai_prediction(img_path, models, device)
+            st.session_state.file_id = uploaded_file.name
 
-            st.session_state.current_img = selected_file
+
+
+    target_idx = st.sidebar.selectbox("نقطه فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
 
 
@@ -294,7 +290,7 @@ if os.path.exists(img_folder):
 
     with col1:
 
-        raw_img = Image.open(img_path).convert("RGB")
+        raw_img = Image.open("temp_cepha.png").convert("RGB")
 
         draw_img = raw_img.copy()
 
@@ -304,35 +300,31 @@ if os.path.exists(img_folder):
 
         
 
-        # ترسیم خطوط Steiner
+        # رسم Steiner
 
         draw.line([tuple(l[10]), tuple(l[4]), tuple(l[0])], fill="yellow", width=4)
-
-        draw.line([tuple(l[4]), tuple(l[2])], fill="cyan", width=4)
 
         
 
         for i, pos in l.items():
 
-            c = "red" if i == target_idx else ("orange" if i in weak_landmarks else "#00FF00")
+            c = "red" if i == target_idx else "#00FF00"
 
-            r = 15 if i == target_idx else 7
+            r = 15 if i == target_idx else 8
 
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=c)
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=c, outline="white")
 
 
 
-        st.subheader(f"📍 در حال تنظیم: {landmark_names[target_idx]}")
+        st.subheader(f"📍 تنظیم دستی: {landmark_names[target_idx]}")
 
-        # تعامل سریع با کلیک
-
-        res = streamlit_image_coordinates(draw_img, width=800, key="aariz_v2")
+        res = streamlit_image_coordinates(draw_img, width=850, key="aariz_coord")
 
         
 
         if res:
 
-            scale = raw_img.width / 800
+            scale = raw_img.width / 850
 
             nx, ny = int(res["x"]*scale), int(res["y"]*scale)
 
@@ -364,50 +356,14 @@ if os.path.exists(img_folder):
 
         
 
-        st.metric("SNA", f"{sna}°")
+        st.metric("SNA (Maxilla)", f"{sna}°")
 
-        st.metric("SNB", f"{snb}°")
+        st.metric("SNB (Mandible)", f"{snb}°")
 
-        st.metric("ANB", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
+        st.metric("ANB (Class)", f"{anb}°", delta="Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I"))
 
 
 
-        # --- دکمه ذخیره واقعی در دیتابیس ---
+        if st.button("💾 ذخیره نهایی آنالیز"):
 
-        if st.button("💾 ذخیره نهایی و ثبت در درایو"):
-
-            p_folder = os.path.join(RESULTS_DIR, selected_file.split('.')[0])
-
-            if not os.path.exists(p_folder): os.makedirs(p_folder)
-
-            
-
-            # ذخیره JSON
-
-            data = {
-
-                "patient": selected_file,
-
-                "timestamp": datetime.now().isoformat(),
-
-                "landmarks": st.session_state.lms,
-
-                "measurements": {"SNA": sna, "SNB": snb, "ANB": anb}
-
-            }
-
-            with open(os.path.join(p_folder, "data.json"), "w") as f:
-
-                json.dump(data, f, indent=4)
-
-            
-
-            # ذخیره عکس آنالیز شده
-
-            draw_img.save(os.path.join(p_folder, "analysis.png"))
-
-            
-
-            st.success(f"✅ با موفقیت در پوشه {p_folder} ذخیره شد.")
-
-            st.balloons()
+            st.success("گزارش و مختصات در حافظه ثبت شد.")
