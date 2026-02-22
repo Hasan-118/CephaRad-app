@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -67,7 +67,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V6.3", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V6.5", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -107,27 +107,36 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز تجمعی")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27, 12, 13]):
-            # Steiner & Downs
+        # --- بخش حیاتی: ترسیم تمامی خطوط گرافیکی (V6.1 + V6.2) ---
+        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27, 12, 13]):
+            # ۱. خطوط Steiner
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            
+            # ۲. صفحه Occ و دندان‌ها (که در نسخه قبل حذف شده بود)
+            p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ Plane
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1 (محور دندان بالا)
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1 (محور دندان پایین)
+            
+            # ۳. خطوط Downs و بافت نرم
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line (Ricketts)
             
-            # McNamara (اصلاح خطا: حذف پارامتر dash)
+            # ۴. خطوط McNamara
             draw.line([tuple(l[12]), tuple(l[0])], fill="brown", width=2) # Co-A
             draw.line([tuple(l[12]), tuple(l[13])], fill="brown", width=2) # Co-Gn
             
-            # ترسیم دستی N-Perp برای جلوگیری از خطا
+            # ۵. N-Perpendicular (با منطق ترسیم دستی پایدار)
             p_n, p_po, p_or = np.array(l[4]), np.array(l[15]), np.array(l[5])
             v_fh = (p_or - p_po) / (np.linalg.norm(p_or - p_po) + 1e-6)
             v_perp = np.array([-v_fh[1], v_fh[0]])
-            for i in range(0, 500, 20): # ترسیم خط‌چین دستی
+            for i in range(0, 500, 20):
                 p1 = p_n + v_perp * i; p2 = p_n + v_perp * (i + 10)
                 draw.line([tuple(p1), tuple(p2)], fill="gray", width=2)
 
@@ -147,7 +156,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات (تضمین عدم حذف) ---
+    # --- ۴. محاسبات تجمعی (Wits + Steiner + McNamara) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -156,24 +165,40 @@ if uploaded_file and len(models) == 3:
     def get_dist(p1, p2): return round(np.linalg.norm(np.array(p1) - np.array(p2)) * pixel_size, 2)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
-    fma = get_ang(l[15], l[5], l[14], l[3]); co_a, co_gn = get_dist(l[12], l[0]), get_dist(l[12], l[13])
-    diff = round(co_gn - co_a, 2)
+    fma = get_ang(l[15], l[5], l[14], l[3]); interinc = get_ang(l[20], l[21], l[23], l[17])
     
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("McNamara Diff", f"{diff} mm", f"Co-A: {co_a}")
-    m2.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}")
-    m3.metric("Growth (FMA)", f"{fma}°")
-    m4.metric("Gender Mode", gender)
+    # محاسبه Wits (بر اساس صفحه Occ)
+    p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
+    wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
+    wits_norm = 0 if gender == "آقا (Male)" else -1
 
-    # --- ۵. گزارش بالینی جامع ---
-    st.header("📑 گزارش نهایی و نقشه راه درمان")
-    rep_c1, rep_c2 = st.columns(2)
-    with rep_c1:
-        st.subheader("📏 تحلیل McNamara")
-        st.write(f"• طول فک بالا: {co_a} mm | فک پایین: {co_gn} mm")
-        ideal = 22 if (gender == "خانم (Female)" and co_a < 90) else 27
-        st.write(f"• تفاضل فعلی: {diff} mm (هدف حدودی: {ideal} mm)")
-    with rep_c2:
-        st.subheader("💡 تشخیص و طرح درمان")
-        if abs(anb) > 8 or abs(diff-ideal) > 10: st.error("🚨 مورد مشکوک به جراحی (Surgical Case)")
-        else: st.success("✅ مورد مناسب برای درمان ارتودنسی (Orthodontic Case)")
+    # محاسبات McNamara
+    co_a, co_gn = get_dist(l[12], l[0]), get_dist(l[12], l[13]); diff = round(co_gn - co_a, 2)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
+    m2.metric("Wits (Occ)", f"{round(wits_mm, 2)} mm", f"Norm: {wits_norm}")
+    m3.metric("McNamara Diff", f"{diff} mm", f"Co-A: {co_a}")
+    m4.metric("Growth Pattern", f"{fma}°", "Downs FMA")
+
+    # --- ۵. گزارش بالینی و تحلیل بافت نرم ---
+    st.divider()
+    st.header(f"📑 گزارش جامع بالینی ({gender})")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("👄 تحلیل بافت نرم و زیبایی")
+        dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8])) + 1e-6) * pixel_size, 2)
+        dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8])) + 1e-6) * pixel_size, 2)
+        st.write(f"• لب بالا تا خط E: **{dist_ls} mm** (هدف: -4mm)")
+        st.write(f"• لب پایین تا خط E: **{dist_li} mm** (هدف: -2mm)")
+        st.write(f"• زاویه بین دندانی: **{interinc}°**")
+
+    with c2:
+        st.subheader("💡 تشخیص و نقشه راه درمان")
+        st.write(f"• وضعیت فکی (Wits): **Class {'II' if wits_mm > wits_norm+1.5 else 'III' if wits_mm < wits_norm-1.5 else 'I'}**")
+        ideal_diff = 27 if gender == "آقا (Male)" else 22
+        if abs(diff - ideal_diff) > 10 or abs(anb) > 8:
+            st.error("🚨 ناهنجاری اسکلتال شدید؛ احتمال نیاز به جراحی فک (Orthognathic Surgery).")
+        else:
+            st.success("✅ ناهنجاری در محدوده جبران ارتودنسی (Camouflage Treatment).")
