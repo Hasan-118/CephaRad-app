@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard V5.5) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,12 +37,11 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
+# --- ۲. لودر و توابع (حفظ کامل قابلیت‌ها) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
-    device = torch.device("cpu")
-    loaded_models = []
+    device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
@@ -68,7 +67,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V5.7", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V5.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -80,7 +79,7 @@ gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
@@ -88,7 +87,7 @@ if uploaded_file and len(models) == 3:
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
@@ -100,6 +99,7 @@ if uploaded_file and len(models) == 3:
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
+        # نشانگر قرمز (تضمین حضور)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
@@ -110,20 +110,15 @@ if uploaded_file and len(models) == 3:
     with col2:
         st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        # Steiner & Wits Lines (حفظ شده)
-        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21]):
+        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
             draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
             v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
             wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-        else: wits_mm = 0
-        # Downs Lines (حفظ شده)
-        if all(k in l for k in [15, 5, 14, 3, 20, 21, 23, 17]):
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2)
+        else: wits_mm = 0
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
@@ -134,40 +129,35 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. تفسیر جامع بالینی (Complete Interpretation) ---
+    # --- ۴. تفسیر و نقشه راه درمان (Strategic Roadmap) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
-    # مقادیر
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
-    fma = get_ang(l[15], l[5], l[14], l[3]); f_angle = get_ang(l[15], l[5], l[6])
-    convexity = get_ang(l[4], l[0], l[6]); interinc = get_ang(l[20], l[21], l[23], l[17])
+    fma = get_ang(l[15], l[5], l[14], l[3]); interinc = get_ang(l[20], l[21], l[23], l[17])
     
-    st.header("📑 گزارش و تفسیر نهایی بالینی")
+    st.header("🩺 نقشه راه درمان (Treatment Roadmap)")
     
-    rep1, rep2 = st.columns(2)
-    with rep1:
-        st.subheader("🦷 آنالیز روابط فکی (Skeletal)")
-        # تفسیر ANB
-        anb_status = "Normal Class I" if 1 < anb < 4 else "Class II Skeletal" if anb >= 4 else "Class III Skeletal"
-        st.write(f"**ANB Angle:** {anb}° ({anb_status})")
-        # تفسیر Wits
-        w_norm = 0 if gender == "آقا (Male)" else -1
-        w_diff = wits_mm - w_norm
-        w_diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I (Normal)"
-        st.write(f"**Wits Appraisal:** {round(wits_mm, 2)} mm ({w_diag})")
-        st.info(f"**تفسیر:** بر اساس مقادیر Wits و ANB، بیمار دارای رابطه فکی {anb_diag if 'anb_diag' in locals() else anb_status} است.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("💡 رویکرد استراتژیک")
+        plan = []
+        if anb > 5 or wits_mm > 2: plan.append("• **Class II Correction:** نیاز به رتروژن ماکسیلا یا پروتروژن مندیبل.")
+        elif anb < 0 or wits_mm < -2: plan.append("• **Class III Correction:** بررسی نیاز به جراحی فک یا فیس‌ماسک (در سن رشد).")
+        
+        if fma > 32: plan.append("• **High Angle Warning:** کنترل شدید بعد عمودی؛ اجتناب از اکستروژن مولرها.")
+        elif fma < 20: plan.append("• **Low Angle:** پتانسیل بالای دیپ‌بایت؛ امکان اکستروژن مولرها برای باز کردن بایت.")
+        
+        if interinc < 120: plan.append("• **Protrusion Management:** بررسی نیاز به کشیدن دندان (Extraction) برای اصلاح لیب ورشن.")
+        
+        if not plan: plan.append("• پارامترها در محدوده نرمال هستند. طرح درمان متمرکز بر ردیف کردن دندان‌ها (Alignment).")
+        st.write("\n".join(plan))
 
-    with rep2:
-        st.subheader("📐 آنالیز رشد و دندان (Growth & Dental)")
-        # تفسیر FMA
-        fma_desc = "Vertical Growth (Long Face)" if fma > 30 else "Horizontal Growth (Short Face)" if fma < 20 else "Normodivergent"
-        st.write(f"**FMA (Growth Pattern):** {fma}° ({fma_desc})")
-        # تفسیر Interincisal
-        inc_desc = "Protrusion (دندان‌های بیرون‌زده)" if interinc < 125 else "Upright (دندان‌های عمودی)" if interinc > 140 else "Normal"
-        st.write(f"**Interincisal Angle:** {interinc}° ({inc_desc})")
-        # تفسیر Convexity
-        conv_desc = "Convex Profile (Class II)" if convexity > 5 else "Concave Profile (Class III)" if convexity < -5 else "Straight Profile"
-        st.write(f"**Convexity (N-A-Pog):** {convexity}° ({conv_desc})")
+    with c2:
+        st.subheader("🚨 ملاحظات جراحی vs ارتودنسی")
+        if abs(anb) > 7 or abs(wits_mm) > 5:
+            st.error("⚠️ **Surgical Borderline:** شدت دیسکرپانسی فکی احتمالاً فراتر از ارتودنسی جبرانی (Camouflage) است.")
+        else:
+            st.success("✅ **Orthodontic Range:** روابط فکی احتمالاً با ارتودنسی و مکانوتراپی قابل اصلاح است.")
