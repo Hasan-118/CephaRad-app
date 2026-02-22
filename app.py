@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع کمکی (حفظ کامل) ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل قابلیت‌ها) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -78,7 +78,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V5.3", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V5.4", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -102,6 +102,7 @@ if uploaded_file and len(models) == 3:
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
+    # دکمه ریست (حفظ شده طبق Gold Standard)
     if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1
@@ -121,7 +122,7 @@ if uploaded_file and len(models) == 3:
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        # کراس‌هیر قرمز (تضمین حضور نشانگر)
+        # نشانگر قرمز مگنیفایر (حفظ شده)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3)
         mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
@@ -134,29 +135,25 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی (Steiner + Wits + Downs Full)")
+        st.subheader("🖼 نمای گرافیکی تجمیعی (Steiner + Wits + Downs Full)")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ۱. Steiner Lines (حفظ شده)
-        if all(k in l for k in [10, 4, 0, 2]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
-
-        # ۲. Functional Occlusal & Wits (حفظ شده)
-        try:
+        # ۱. Steiner & Wits (حفظ شده)
+        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21]):
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
             p_occ_p = (np.array(l[18]) + np.array(l[22])) / 2
             p_occ_a = (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Functional Occ
             v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
             wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-        except: wits_mm = 0
+        else: wits_mm = 0
 
-        # ۳. Downs Full Lines (اسکلتال + دنتال جدید)
-        if all(k in l for k in [15, 5, 4, 6, 14, 3]):
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # Frankfort (Po-Or)
-            draw.line([tuple(l[4]), tuple(l[6])], fill="blue", width=2)   # N-Pog
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular Plane (Go-Me)
+        # ۲. Downs Lines (اسکلتال، مندیبل و دندان‌های ثنایا)
+        if all(k in l for k in [15, 5, 4, 6, 14, 3, 20, 21, 23, 17]):
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
+            draw.line([tuple(l[20]), tuple(l[21])], fill="cyan", width=2)   # Upper Incisor Axis
+            draw.line([tuple(l[23]), tuple(l[17])], fill="magenta", width=2) # Lower Incisor Axis
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -177,23 +174,26 @@ if uploaded_file and len(models) == 3:
                 st.session_state.click_version += 1
                 st.rerun()
 
-    # --- ۴. محاسبات نهایی تجمیعی ---
+    # --- ۴. محاسبات آنالیز جامع ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        if p4 is None: # زاویه بین سه نقطه
+        if p4 is None:
             v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        else: # زاویه بین دو خط (p1-p2 و p3-p4)
+        else:
             v1, v2 = np.array(p2)-np.array(p1), np.array(p4)-np.array(p3)
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     f_angle = get_ang(l[15], l[5], l[6]) 
-    fma = get_ang(l[15], l[5], l[14], l[3]) # FH to Mandibular
-    occ_fh = get_ang(l[15], l[5], (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2)
+    fma = get_ang(l[15], l[5], l[14], l[3]) 
+    # Interincisal Angle (زاویه بین محورهای ثنایا)
+    interincisal = get_ang(l[20], l[21], l[23], l[17])
+    # L1 to Occlusal (ثنایای پایین به صفحه جفت‌گیری)
+    l1_occ = get_ang(l[23], l[17], (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2)
 
-    col_1, col_2, col_3, col_4 = st.columns(4)
-    col_1.metric("Steiner (ANB)", f"{round(sna-snb, 2)}°", f"SNA: {sna}")
-    col_2.metric("Wits (Functional)", f"{round(wits_mm, 2)} mm")
-    col_3.metric("Facial Angle / FMA", f"{f_angle}° / {fma}°")
-    col_4.metric("Occlusal to FH", f"{occ_fh}°")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Steiner (ANB)", f"{round(sna-snb, 2)}°", f"SNA: {sna}")
+    c2.metric("Wits (Functional)", f"{round(wits_mm, 2)} mm")
+    c3.metric("Downs (FMA)", f"{fma}°", f"Facial: {f_angle}°")
+    c4.metric("Dental Downs", f"IntInc: {interincisal}°", f"L1-Occ: {l1_occ}°")
