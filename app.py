@@ -23,8 +23,7 @@ class DoubleConv(nn.Module):
 class CephaUNet(nn.Module):
     def __init__(self, n_landmarks=29):
         super().__init__()
-        self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
         self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
         self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
@@ -49,8 +48,7 @@ def load_aariz_models():
     device = torch.device("cpu")
     loaded_models = []
     for f, fid in model_ids.items():
-        if not os.path.exists(f):
-            gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
+        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
             m = CephaUNet(n_landmarks=29).to(device)
             ckpt = torch.load(f, map_location=device)
@@ -70,8 +68,7 @@ def run_precise_prediction(img_pil, models, device):
     px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py))
     input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad():
-        outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     coords = {}
     for i in range(29):
@@ -81,16 +78,15 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Precision Station V4.3", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.4", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-# مقداردهی اولیه به متغیرهای کنترلی
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-# اسلایدر تنظیم سایز لندمارک و متن
-label_size = st.sidebar.slider("📏 سایز نام و لندمارک:", 10, 80, 30)
+# اسلایدر مخصوص سایز "نام" نقاط
+font_size = st.sidebar.slider("🔤 سایز نام لندمارک:", 20, 100, 45)
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
@@ -99,13 +95,11 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("استخراج هوشمند لندمارک‌ها..."):
-            st.session_state.lms = run_precise_prediction(raw_img, models, device)
-            st.session_state.file_id = uploaded_file.name
+        st.session_state.lms = run_precise_prediction(raw_img, models, device)
+        st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    # جلوگیری از پرش: اگر لندمارک عوض شد، ورژن کلیک را بالا ببر تا مختصات قبلی پاک شود
     if st.session_state.last_target != target_idx:
         st.session_state.click_version += 1
         st.session_state.last_target = target_idx
@@ -113,28 +107,25 @@ if uploaded_file and len(models) == 3:
 
     col1, col2 = st.columns([1.2, 2])
     
-    # توابع ترسیم ذره‌بین و تصویر اصلی
     with col1:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]
-        # ایجاد ذره‌بین
-        size = 120
-        left, top = max(0, min(int(l_pos[0] - size//2), W - size)), max(0, min(int(l_pos[1] - size//2), H - size))
-        mag_crop = raw_img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
+        size_m = 120
+        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale_mag = size / 400
-            new_coord = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_coord:
-                st.session_state.lms[target_idx] = new_coord
+            scale_mag = size_m / 400
+            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            if st.session_state.lms[target_idx] != new_c:
+                st.session_state.lms[target_idx] = new_c
                 st.session_state.click_version += 1
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full View & Steiner")
+        st.subheader("🖼 نمای کامل (سایز نام‌ها قابل تنظیم)")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -145,27 +136,26 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
 
-        # فونت پویا بر اساس اسلایدر
-        try: font = ImageFont.truetype("arial.ttf", label_size)
+        # تنظیم فونت بر اساس اسلایدر
+        try: font = ImageFont.truetype("arial.ttf", font_size)
         except: font = ImageFont.load_default()
 
         for i, pos in l.items():
-            is_active = (i == target_idx)
-            color = "red" if is_active else "#00FF00"
-            # شعاع لندمارک بر اساس اسلایدر
-            r = int(label_size / 2) if is_active else int(label_size / 4)
+            is_act = (i == target_idx)
+            color = "red" if is_act else "#00FF00"
+            r = 12 if is_act else 7 # سایز دایره‌ها ثابت و بهینه
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # رسم نام با سایه
+            # رسم نام با سایه (سایز متن مستقیماً از اسلایدر می‌آید)
             draw.text((pos[0] + r + 5, pos[1] - r + 2), landmark_names[i], fill="black", font=font)
             draw.text((pos[0] + r + 3, pos[1] - r), landmark_names[i], fill=color, font=font)
         
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 850
-            m_coord = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_coord:
-                st.session_state.lms[target_idx] = m_coord
+            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c
                 st.session_state.click_version += 1
                 st.rerun()
 
@@ -175,9 +165,6 @@ if uploaded_file and len(models) == 3:
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-    
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{round(sna-snb, 2)}°")
+    c1.metric("SNA", f"{sna}°"); c2.metric("SNB", f"{snb}°"); c3.metric("ANB", f"{round(sna-snb, 2)}°")
