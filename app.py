@@ -60,15 +60,6 @@ def load_aariz_models():
         except: pass
     return loaded_models, device
 
-def get_safe_magnifier(img, coord, size=120):
-    w, h = img.size
-    x, y = coord
-    left, top = max(0, min(int(x - size//2), w - size)), max(0, min(int(y - size//2), h - size))
-    crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
-    draw = ImageDraw.Draw(crop)
-    draw.line((180, 200, 220, 200), fill="red", width=3); draw.line((200, 180, 200, 220), fill="red", width=3)
-    return crop, (left, top)
-
 def run_precise_prediction(img_pil, models, device):
     ow, oh = img_pil.size
     img_gray = img_pil.convert('L')
@@ -90,14 +81,16 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Precision Station V4.2", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.3", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
+# مقداردهی اولیه به متغیرهای کنترلی
 if "click_version" not in st.session_state: st.session_state.click_version = 0
+if "last_target" not in st.session_state: st.session_state.last_target = 0
 
-# اسلایدر برای تنظیم سایز نام لندمارک‌ها
-label_size = st.sidebar.slider("📏 سایز نام لندمارک:", 15, 60, 35)
+# اسلایدر تنظیم سایز لندمارک و متن
+label_size = st.sidebar.slider("📏 سایز نام و لندمارک:", 10, 80, 30)
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
@@ -106,27 +99,42 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("AI Prediction..."):
+        with st.spinner("استخراج هوشمند لندمارک‌ها..."):
             st.session_state.lms = run_precise_prediction(raw_img, models, device)
             st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    
+    # جلوگیری از پرش: اگر لندمارک عوض شد، ورژن کلیک را بالا ببر تا مختصات قبلی پاک شود
+    if st.session_state.last_target != target_idx:
+        st.session_state.click_version += 1
+        st.session_state.last_target = target_idx
+        st.rerun()
 
     col1, col2 = st.columns([1.2, 2])
+    
+    # توابع ترسیم ذره‌بین و تصویر اصلی
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
-        res_mag = streamlit_image_coordinates(mag_img, key=f"mag_{target_idx}_{st.session_state.click_version}")
+        l_pos = st.session_state.lms[target_idx]
+        # ایجاد ذره‌بین
+        size = 120
+        left, top = max(0, min(int(l_pos[0] - size//2), W - size)), max(0, min(int(l_pos[1] - size//2), H - size))
+        mag_crop = raw_img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
+        mag_draw = ImageDraw.Draw(mag_crop)
+        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale = 120 / 400
-            new_coord = [int(off_x + (res_mag["x"] * scale)), int(off_y + (res_mag["y"] * scale))]
+            scale_mag = size / 400
+            new_coord = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_coord:
                 st.session_state.lms[target_idx] = new_coord
                 st.session_state.click_version += 1
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 Full View & Steiner Analysis")
+        st.subheader("🖼 Full View & Steiner")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -137,21 +145,22 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
 
-        # Drawing Landmarks and Labels
+        # فونت پویا بر اساس اسلایدر
+        try: font = ImageFont.truetype("arial.ttf", label_size)
+        except: font = ImageFont.load_default()
+
         for i, pos in l.items():
-            color = "red" if i == target_idx else "#00FF00"
-            r = 15 if i == target_idx else 8
+            is_active = (i == target_idx)
+            color = "red" if is_active else "#00FF00"
+            # شعاع لندمارک بر اساس اسلایدر
+            r = int(label_size / 2) if is_active else int(label_size / 4)
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # نمایش نام با سایز بزرگتر و سایه برای خوانایی
-            try: font = ImageFont.truetype("arial.ttf", label_size)
-            except: font = ImageFont.load_default()
-            
-            # رسم سایه مشکی پشت متن برای خوانایی در نقاط روشن
-            draw.text((pos[0] + r + 7, pos[1] - r + 2), landmark_names[i], fill="black", font=font)
-            draw.text((pos[0] + r + 5, pos[1] - r), landmark_names[i], fill=color, font=font)
+            # رسم نام با سایه
+            draw.text((pos[0] + r + 5, pos[1] - r + 2), landmark_names[i], fill="black", font=font)
+            draw.text((pos[0] + r + 3, pos[1] - r), landmark_names[i], fill=color, font=font)
         
-        res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 850
             m_coord = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
