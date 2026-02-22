@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع کمکی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -77,8 +77,35 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V4.8", layout="wide")
+# --- ۳. محاسبات آنالیز Wits ---
+def calculate_wits(l_dict):
+    # Wits نیاز به صفحه Occlusal دارد (مثلاً بین دندان‌های مولر و ثنایا)
+    # لندمارک‌های مورد نیاز: UMT (22) و LMT (18) برای خلف، و تماس دندانی UIT/LIT برای قدام
+    # در اینجا از میانگین مولرها و ثنایا برای رسم خط اپیکال استفاده می‌کنیم
+    try:
+        p1 = np.array(l_dict[22]) # Upper Molar
+        p2 = np.array(l_dict[21]) # Upper Incisor Tip
+        
+        # خط Occlusal (L)
+        v = p2 - p1
+        v_unit = v / np.linalg.norm(v)
+        
+        # نقاط A (0) و B (2)
+        A = np.array(l_dict[0])
+        B = np.array(l_dict[2])
+        
+        # تصویر کردن نقاط بر خط (Projection)
+        # AO = p1 + dot(A-p1, v_unit) * v_unit
+        dist_a = np.dot(A - p1, v_unit)
+        dist_b = np.dot(B - p1, v_unit)
+        
+        wits_value = dist_a - dist_b # AO - BO
+        return round(wits_value, 2), p1, p2
+    except:
+        return 0, None, None
+
+# --- ۴. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V4.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -86,7 +113,6 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
 text_scale = st.sidebar.slider("🔤 مقیاس ابعاد نام (Font Scale):", 1, 10, 3)
-
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
@@ -94,14 +120,12 @@ if uploaded_file and len(models) == 3:
     W, H = raw_img.size
     
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        # ذخیره پیش‌بینی اولیه برای قابلیت Reset
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy()
         st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    # دکمه ریست نقطه
     if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1
@@ -117,7 +141,6 @@ if uploaded_file and len(models) == 3:
     with col1:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]
-        # زوم کمتر (نمای بازتر) با افزایش size_m از 120 به 180
         size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
@@ -133,15 +156,22 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
+        st.subheader("🖼 نمای گرافیکی (Steiner + Wits)")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
         
+        # Steiner Lines
         if all(k in l for k in [10, 4, 0, 2]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=4)
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+
+        # Wits Occlusal Line
+        w_val, p_back, p_front = calculate_wits(l)
+        if p_back is not None:
+            # امتداد خط برای نمایش بهتر
+            draw.line([tuple(p_back), tuple(p_front)], fill="white", width=2)
 
         for i, pos in l.items():
             is_act = (i == target_idx)
@@ -175,5 +205,11 @@ if uploaded_file and len(models) == 3:
 
     sna = get_ang(l[10], l[4], l[0])
     snb = get_ang(l[10], l[4], l[2])
-    c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°"); c2.metric("SNB", f"{snb}°"); c3.metric("ANB", f"{round(sna-snb, 2)}°")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("SNA", f"{sna}°")
+    c2.metric("SNB", f"{snb}°")
+    c3.metric("ANB", f"{round(sna-snb, 2)}°")
+    c4.metric("Wits Appraisal", f"{w_val} px")
+    
+    st.info("💡 مقدار Wits در حال حاضر بر اساس پیکسل گزارش شده است. پس از کالیبراسیون با خط‌کش، به میلی‌متر تبدیل خواهد شد.")
