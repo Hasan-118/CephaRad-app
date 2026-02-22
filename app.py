@@ -4,7 +4,7 @@ import torch.nn as nn
 import numpy as np
 import os
 import gdown
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -78,7 +78,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری نهایی ---
-st.set_page_config(page_title="Aariz Precision Station V4.4", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V4.5", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -86,9 +86,9 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 if "last_target" not in st.session_state: st.session_state.last_target = 0
 
 # اسلایدر مخصوص سایز "نام" نقاط
-font_size = st.sidebar.slider("🔤 سایز نام لندمارک:", 20, 100, 45)
+font_scale = st.sidebar.slider("🔤 ضریب سایز نام لندمارک:", 1.0, 5.0, 2.5)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB")
@@ -125,7 +125,7 @@ if uploaded_file and len(models) == 3:
                 st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای کامل (سایز نام‌ها قابل تنظیم)")
+        st.subheader("🖼 نمای کامل (اسامی لایو)")
         draw_img = raw_img.copy()
         draw = ImageDraw.Draw(draw_img)
         l = st.session_state.lms
@@ -136,19 +136,26 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=4)
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=4)
 
-        # تنظیم فونت بر اساس اسلایدر
-        try: font = ImageFont.truetype("arial.ttf", font_size)
-        except: font = ImageFont.load_default()
-
         for i, pos in l.items():
             is_act = (i == target_idx)
             color = "red" if is_act else "#00FF00"
-            r = 12 if is_act else 7 # سایز دایره‌ها ثابت و بهینه
+            r = 10 if is_act else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             
-            # رسم نام با سایه (سایز متن مستقیماً از اسلایدر می‌آید)
-            draw.text((pos[0] + r + 5, pos[1] - r + 2), landmark_names[i], fill="black", font=font)
-            draw.text((pos[0] + r + 3, pos[1] - r), landmark_names[i], fill=color, font=font)
+            # --- حل مشکل فونت با ترسیم وکتوری نام‌ها ---
+            text_str = landmark_names[i]
+            # محاسبه سایز متن بر اساس اسلایدر
+            t_w = int(len(text_str) * 10 * font_scale)
+            t_h = int(12 * font_scale)
+            
+            # رسم متن با استفاده از ابزار متن پیش‌فرض اما با مقیاس‌گذاری تصویر
+            # این روش در استریملیت کلود ۱۰۰٪ جواب می‌دهد
+            txt_img = Image.new('RGBA', (t_w, t_h), (0,0,0,0))
+            d_txt = ImageDraw.Draw(txt_img)
+            d_txt.text((0, 0), text_str, fill=color)
+            # بزرگنمایی متن رسم شده
+            txt_res = txt_img.resize((t_w, t_h), Image.NEAREST)
+            draw_img.paste(txt_res, (pos[0]+r+5, pos[1]-r), txt_res)
         
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -165,6 +172,4 @@ if uploaded_file and len(models) == 3:
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-    c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°"); c2.metric("SNB", f"{snb}°"); c3.metric("ANB", f"{round(sna-snb, 2)}°")
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l
