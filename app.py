@@ -7,9 +7,8 @@ import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-import base64
 
-# --- ۱. معماری و مدل (بدون تغییر) ---
+# --- ۱. معماری ثابت مرجع (Gold Standard V6.5) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,6 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
+# --- ۲. بارگذاری و پیش‌بینی (عیناً مشابه مرجع) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -66,25 +66,17 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۲. بهینه‌سازی توابع ریاضی (Speed Boost) ---
-def get_ang(p1, p2, p3, p4=None):
-    v1 = np.array(p1) - np.array(p2); v2 = (np.array(p3) - np.array(p2)) if p4 is None else (np.array(p4) - np.array(p3))
-    norm = np.linalg.norm(v1) * np.linalg.norm(v2)
-    return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (norm if norm > 0 else 1e-6), -1.0, 1.0))), 1)
-
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision V7.1", layout="wide")
+# --- ۳. رابط کاربری (UI) - کپی دقیق ساختار V6.5 ---
+st.set_page_config(page_title="Aariz Precision Station V7.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 Clinical Settings")
-patient_name = st.sidebar.text_input("Patient:", "Aariz Case")
+st.sidebar.header("📏 Settings")
 gender = st.sidebar.radio("Gender:", ["Male", "Female"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1)
-
-uploaded_file = st.sidebar.file_uploader("Upload Image:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("Upload Cephalogram:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
@@ -96,12 +88,12 @@ if uploaded_file and len(models) == 3:
     
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 Fast Magnifier")
+        st.subheader("🔍 Magnifier")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.NEAREST) # تغییر به NEAREST برای سرعت
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=2); mag_draw.line((200, 180, 200, 220), fill="red", width=2)
+        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
             scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
@@ -109,40 +101,43 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        # ترسیم گرافیکی تجمعی (حفظ ۱۰۰٪ مرجع)
+        st.subheader("🖼 Cephalometric Overlay")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
+        # ترسیم خطوط مرجع V6.5
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 12, 13, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=2) # SN
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)   # NA
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # NB
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=2) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=2) # MP
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=2)   # E-Line
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # MP
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)   # E-Line
             draw.line([tuple(l[12]), tuple(l[0])], fill="brown", width=2)  # Co-A
             draw.line([tuple(l[12]), tuple(l[13])], fill="brown", width=2) # Co-Gn
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=2) # Occ
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([pos[0]-5, pos[1]-5, pos[0]+5, pos[1]+5], fill=color)
+            draw.ellipse([pos[0]-7, pos[1]-7, pos[0]+7, pos[1]+7], fill=color)
 
-        streamlit_image_coordinates(draw_img, width=800, key=f"main_{st.session_state.click_version}")
+        streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
 
-    # --- ۴. محاسبات و طرح درمان تجمعی (بدون حذف) ---
+    # --- ۴. محاسبات (افزایشی و بدون تغییر در ساختار قبلی) ---
     st.divider()
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 1)
-    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0]))*pixel_size
-    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13]))*pixel_size
-    diff = round(co_gn - co_a, 1)
+    def get_ang(p1, p2, p3, p4=None):
+        v1 = np.array(p1)-np.array(p2); v2 = (np.array(p3)-np.array(p2)) if p4 is None else (np.array(p4)-np.array(p3))
+        norm = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1))), 1)
     
+    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 1)
+    co_a, co_gn = np.linalg.norm(np.array(l[12])-np.array(l[0]))*pixel_size, np.linalg.norm(np.array(l[12])-np.array(l[13]))*pixel_size
+    diff = round(co_gn - co_a, 1)
+
     m1, m2, m3 = st.columns(3)
     m1.metric("ANB (Steiner)", f"{anb}°")
     m2.metric("McNamara Diff", f"{diff} mm")
     m3.metric("FMA Angle", f"{get_ang(l[15], l[5], l[14], l[3])}°")
 
+    # بلوک الحاقی طرح درمان (بدون آسیب به منطق مرجع)
     st.subheader("📑 Treatment Roadmap")
-    if abs(anb) > 7 or abs(diff - 25) > 12:
-        st.error("🚨 Skeletal Discrepancy: Surgical case likely.")
-    else:
-        st.success("✅ Orthodontic Camouflage possible.")
+    if abs(anb) > 7 or abs(diff - 25) > 12: st.error("🚨 Potential Surgical Case")
+    else: st.success("✅ Orthodontic Treatment Possible")
