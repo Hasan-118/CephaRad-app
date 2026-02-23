@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده) ---
+# --- ۲. لودر و توابع پیش‌بینی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -129,7 +129,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. تحلیل جامع و محاسبات بالینی ---
+    # --- ۴. تحلیل تفصیلی و طرح درمان تخصصی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -141,68 +141,64 @@ if uploaded_file and len(models) == 3:
     anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
-    diff_mcnamara = round(co_gn - co_a, 2)
+    diff_mcn = round(co_gn - co_a, 2)
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-    fma_desc = "Vertical" if fma > 30 else "Horizontal" if fma < 20 else "Normal"
+    
+    st.header(f"📑 آنالیز تخصصی و طرح درمان تفصیلی ({gender})")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("🚩 یافته‌های اسکلتال (Skeletal Findings)")
+        diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
+        st.markdown(f"**رابطه فکی:** {diag} (ANB: {anb}°)")
+        st.markdown(f"**شاخص مک‌نامارا:** اختلاف {diff_mcn} mm (Co-Gn vs Co-A)")
+        
+        # منطق تفصیلی طرح درمان
+        if diag == "Class II":
+            if diff_mcn < 22: tp = "ماندیبل رتروگناتیک؛ پیشنهاد مدیکیشن رشد در سنین پایین یا جراحی BSSO در بزرگسالی."
+            else: tp = "ماگزیلا پروتروزیو؛ نیاز به هدگیر یا استخراج دندان‌های پرمولر بالا جهت استتار."
+        elif diag == "Class III":
+            if diff_mcn > 35: tp = "ماندیبل پروگناتیک؛ کاندید جراحی ست‌بک فک پایین پس از اتمام رشد."
+            else: tp = "ماگزیلا هیپوپلاستیک؛ استفاده از فیس‌ماسک در سن رشد یا جراحی LeFort I."
+        else:
+            tp = "رابطه اسکلتال نرمال؛ تمرکز بر ردیف کردن دندان‌ها و اصلاح اوربایت/اورجت."
+        st.info(f"📍 **رویکرد پیشنهادی:** {tp}")
 
-    st.header(f"📑 گزارش و تفسیر بالینی ({gender})")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("🦷 تحلیل اسکلتال و دندانی")
-        st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
-        st.metric("McNamara Diff", f"{diff_mcnamara} mm", "Target: 25-30mm")
-        st.info(f"**تشخیص اسکلتال:** {diag}")
-    with c2:
-        st.subheader("👄 زیبایی و بافت نرم")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
+    with col_b:
+        st.subheader("📐 الگوی رشد و زیبایی (Growth & Soft Tissue)")
+        fma_desc = "Vertical (High Angle)" if fma > 32 else "Horizontal (Low Angle)" if fma < 20 else "Normal (Average)"
+        st.markdown(f"**الگوی رشد صورت:** {fma_desc} ({fma}°)")
+        
+        if fma > 32: growth_tp = "کنترل عمودی شدید لازم است. پرهیز از الاستیک‌های کلاس II/III طولانی."
+        elif fma < 20: growth_tp = "Deep Bite شدید محتمل است. نیاز به بایت‌پلین یا تکیه‌گاه اسکلتال برای باز کردن بایت."
+        else: growth_tp = "الگوی رشد متعادل؛ استفاده از مکانیک‌های استاندارد ارتودنسی."
+        st.warning(f"⚠️ **ملاحظات مکانوتراپی:** {growth_tp}")
 
-    # --- ۵. افزونه PDF مفصل (Incremental Extension) ---
-    if st.button("📄 دریافت گزارش نهایی و مفصل PDF"):
-        treatment = "Orthognathic Surgery" if abs(anb) > 8 else "Orthodontic Camouflage / Growth Modification"
-        pdf_html = f"""
-        <div style="direction:ltr; font-family:Arial, sans-serif; padding:30px; border:5px solid #2c3e50; border-radius:10px;">
-            <h1 style="text-align:center; color:#2c3e50;">Aariz Precision Station V7.8</h1>
-            <h2 style="text-align:center; color:#7f8c8d;">Comprehensive Clinical Analysis Report</h2>
+    # --- ۵. گزارش PDF فوق تفصیلی ---
+    if st.button("📄 صدور گزارش کلینیکال و طرح درمان نهایی"):
+        report_html = f"""
+        <div style="direction:ltr; font-family:'Segoe UI', Tahoma; padding:40px; border:8px double #34495e;">
+            <h1 style="text-align:center; color:#2c3e50;">Aariz Precision Station - Clinical Report</h1>
             <hr>
-            <table style="width:100%; border-collapse:collapse;">
-                <tr style="background-color:#ecf0f1;">
-                    <th style="padding:10px; border:1px solid #ddd; text-align:left;">Parameter</th>
-                    <th style="padding:10px; border:1px solid #ddd; text-align:left;">Measured Value</th>
-                    <th style="padding:10px; border:1px solid #ddd; text-align:left;">Clinical Interpretation</th>
-                </tr>
-                <tr>
-                    <td style="padding:10px; border:1px solid #ddd;">Skeletal Relation (ANB)</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{anb}°</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{diag} relation</td>
-                </tr>
-                <tr>
-                    <td style="padding:10px; border:1px solid #ddd;">McNamara Difference</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{diff_mcnamara} mm</td>
-                    <td style="padding:10px; border:1px solid #ddd;">Co-Gn: {round(co_gn,1)} / Co-A: {round(co_a,1)}</td>
-                </tr>
-                <tr>
-                    <td style="padding:10px; border:1px solid #ddd;">Growth Pattern (FMA)</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{fma}°</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{fma_desc} growth tendency</td>
-                </tr>
-                <tr>
-                    <td style="padding:10px; border:1px solid #ddd;">Soft Tissue (E-Line Upper)</td>
-                    <td style="padding:10px; border:1px solid #ddd;">{dist_ls} mm</td>
-                    <td style="padding:10px; border:1px solid #ddd;">Esthetic line analysis</td>
-                </tr>
-            </table>
-            <div style="margin-top:20px; padding:15px; background-color:#f9f9f9; border-left:5px solid #2980b9;">
-                <h3 style="color:#2980b9;">💡 Diagnostic Roadmap & Treatment Plan</h3>
-                <p><b>Primary Diagnosis:</b> Skeletal {diag} with {fma_desc} growth pattern.</p>
-                <p><b>Recommended Approach:</b> {treatment}</p>
-                <p style="font-size:12px; color:#7f8c8d;">* This report is generated automatically based on Aariz Station landmarks. Final clinical decision belongs to the orthodontist.</p>
+            <h3>1. Skeletal Analysis</h3>
+            <p>ANB: {anb}° | SNA: {sna}° | SNB: {snb}° | McNamara Diff: {diff_mcn}mm</p>
+            <p><b>Diagnosis:</b> Skeletal {diag}</p>
+            
+            <h3>2. Growth Pattern & Vertical Dimension</h3>
+            <p>FMA: {fma}° | Pattern: {fma_desc}</p>
+            
+            <h3>3. Soft Tissue & Esthetics</h3>
+            <p>Upper Lip to E-Line: {dist_ls}mm | Lower Lip to E-Line: {dist_li}mm</p>
+            
+            <div style="background:#f1f2f6; padding:20px; border-radius:10px;">
+                <h2 style="color:#e67e22;">💊 Detailed Treatment Plan</h2>
+                <p><b>Primary Objective:</b> Correction of {diag} skeletal relationship.</p>
+                <p><b>Growth Consideration:</b> {growth_tp}</p>
+                <p><b>Skeletal Management:</b> {tp}</p>
+                <p><b>Final Esthetic Goal:</b> Achieving lip competence and ideal E-line profile.</p>
             </div>
-            <br>
-            <button onclick="window.print()" style="padding:10px 20px; background-color:#2c3e50; color:white; border:none; cursor:pointer; border-radius:5px;">Print / Save as PDF</button>
+            <br><button onclick="window.print()">Print/Download Report</button>
         </div>
         """
-        st.components.v1.html(pdf_html, height=600, scrolling=True)
+        st.components.v1.html(report_html, height=700, scrolling=True)
