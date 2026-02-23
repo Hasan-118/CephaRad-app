@@ -7,7 +7,6 @@ import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-# افزوده شده برای خروجی PDF
 from fpdf import FPDF
 import base64
 
@@ -196,21 +195,21 @@ if uploaded_file and len(models) == 3:
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
         st.write(f"• Co-A: {round(co_a, 1)} mm | Co-Gn: {round(co_gn, 1)} mm")
 
-    # --- افزونه خروجی PDF (کاملاً افزایشی در انتهای گزارش) ---
-    if st.button("📥 دریافت گزارش PDF"):
+    # --- افزونه خروجی PDF (رفع خطای Unicode با متن انگلیسی در فایل) ---
+    if st.button("📥 Generate PDF Report"):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, txt="Aariz Precision Station - Clinical Report", ln=True, align='C')
-        pdf.set_font("Arial", size=12)
-        pdf.ln(10)
-        pdf.cell(200, 10, txt=f"Analysis for: {gender}", ln=True)
-        pdf.cell(200, 10, txt=f"Steiner ANB: {anb} (SNA: {sna}, SNB: {snb})", ln=True)
-        pdf.cell(200, 10, txt=f"McNamara Difference: {diff_mcnamara} mm", ln=True)
-        pdf.cell(200, 10, txt=f"Downs FMA: {fma} degrees", ln=True)
+        pdf.cell(200, 10, txt="Aariz Precision Clinical Report", ln=True, align='C')
+        pdf.set_font("Arial", size=12); pdf.ln(10)
+        pdf.cell(200, 10, txt=f"Gender: {gender}", ln=True)
+        pdf.cell(200, 10, txt=f"ANB Angle: {anb} (SNA: {sna}, SNB: {snb})", ln=True)
         pdf.cell(200, 10, txt=f"Wits Appraisal: {round(wits_mm, 2)} mm", ln=True)
+        pdf.cell(200, 10, txt=f"McNamara Diff: {diff_mcnamara} mm", ln=True)
+        pdf.cell(200, 10, txt=f"FMA Angle: {fma} deg", ln=True)
+        pdf.cell(200, 10, txt=f"Soft Tissue E-Line (Li): {dist_li} mm", ln=True)
         
-        pdf_output = pdf.output(dest='S').encode('latin-1')
+        pdf_output = pdf.output(dest='S').encode('latin-1', 'ignore') # رفع خطا با نادیده گرفتن کاراکترهای غیرمجاز
         b64 = base64.b64encode(pdf_output).decode()
-        href = f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Clinical_Report.pdf">برای دانلود فایل اینجا کلیک کنید</a>'
+        href = f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Report.pdf">Download PDF</a>'
         st.markdown(href, unsafe_allow_html=True)
