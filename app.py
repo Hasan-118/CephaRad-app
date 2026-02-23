@@ -7,6 +7,8 @@ import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
+from fpdf import FPDF
+import base64
 
 # --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
 class DoubleConv(nn.Module):
@@ -67,13 +69,14 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V9.1", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V9.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
+p_name = st.sidebar.text_input("نام بیمار:", "Patient_Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
@@ -131,7 +134,7 @@ if uploaded_file and len(models) == 3:
             draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
         streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
+    # --- ۴. محاسبات و گزارش (حفظ مرجع + McNamara) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -142,12 +145,10 @@ if uploaded_file and len(models) == 3:
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
-
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
     wits_norm = 0 if gender == "آقا (Male)" else -1
-    
     dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
     dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
 
@@ -157,27 +158,44 @@ if uploaded_file and len(models) == 3:
     m3_col.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4_col.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع شما) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 تحلیل بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        
-        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
+        st.subheader("👄 تحلیل بافت نرم")
+        st.write(f"• لب بالا/پایین تا خط E: **{dist_ls} / {dist_li} mm**")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.info(f"• **وضعیت فکی:** {diag}")
-        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
-            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک.")
-        else:
-            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
-            
+        st.info(f"💡 وضعیت فکی: {diag}")
+
     with c2:
-        st.subheader("📐 تحلیل زوایا و رشد")
+        st.subheader("📐 تحلیل رشد و McNamara")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی اسکلتال: **{fma_desc}**")
+        st.write(f"• الگوی رشد: **{fma_desc}**")
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+
+    # --- ۵. خروجی PDF (افزایشی - کاملاً منطبق بر ساختار گزارش) ---
+    def create_safe_pdf():
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16); pdf.cell(200, 10, "Aariz Precision Station Report", ln=True, align='C')
+        pdf.set_font("Arial", size=12); pdf.ln(10)
+        lines = [
+            f"Patient: {p_name}", f"Gender: {gender}",
+            f"ANB: {anb} | Wits: {round(wits_mm, 2)}mm",
+            f"McNamara Diff (Co-Gn - Co-A): {diff_mcnamara}mm",
+            f"FMA: {fma} | Diagnosis: {diag}",
+            f"Soft Tissue (E-Line): Upper {dist_ls}mm, Lower {dist_li}mm"
+        ]
+        for line in lines:
+            safe_line = line.encode('cp1252', 'ignore').decode('cp1252')
+            pdf.cell(200, 10, safe_line, ln=True)
+        return pdf.output(dest='S').encode('latin-1', 'ignore')
+
+    if st.sidebar.button("📥 خروجی گزارش PDF"):
+        try:
+            pdf_bytes = create_safe_pdf()
+            b64_pdf = base64.b64encode(pdf_bytes).decode()
+            st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64_pdf}" download="Report_{p_name}.pdf">📥 دانلود فایل PDF نهایی</a>', unsafe_allow_html=True)
+        except: st.sidebar.error("خطا در تولید PDF.")
