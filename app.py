@@ -148,7 +148,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ ۱۰۰٪ مرجع) ---
+    # --- ۴. محاسبات و تفسیر هوشمند (حفظ ۱صد درصد مرجع) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -175,7 +175,7 @@ if uploaded_file and len(models) == 3:
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع) ---
+    # --- ۵. گزارش جامع (حفظ ۱۰۰ درصد مرجع) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
@@ -183,8 +183,6 @@ if uploaded_file and len(models) == 3:
         st.subheader("👄 تحلیل بافت نرم و زیبایی")
         st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
         st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
-        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
         st.subheader("💡 نقشه راه درمان")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
@@ -195,21 +193,22 @@ if uploaded_file and len(models) == 3:
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
         st.write(f"• Co-A: {round(co_a, 1)} mm | Co-Gn: {round(co_gn, 1)} mm")
 
-    # --- افزونه خروجی PDF (رفع خطای Unicode با متن انگلیسی در فایل) ---
-    if st.button("📥 Generate PDF Report"):
+    # --- بخش دانلود PDF (بدون انکودینگ لاتین برای رفع ارور) ---
+    if st.button("📥 Generate Report PDF"):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, txt="Aariz Precision Clinical Report", ln=True, align='C')
+        pdf.cell(200, 10, txt="Aariz Precision Station Report", ln=True, align='C')
         pdf.set_font("Arial", size=12); pdf.ln(10)
-        pdf.cell(200, 10, txt=f"Gender: {gender}", ln=True)
-        pdf.cell(200, 10, txt=f"ANB Angle: {anb} (SNA: {sna}, SNB: {snb})", ln=True)
+        pdf.cell(200, 10, txt=f"Analysis Results - Gender: {gender}", ln=True)
+        pdf.cell(200, 10, txt=f"ANB: {anb} (SNA: {sna}, SNB: {snb})", ln=True)
         pdf.cell(200, 10, txt=f"Wits Appraisal: {round(wits_mm, 2)} mm", ln=True)
-        pdf.cell(200, 10, txt=f"McNamara Diff: {diff_mcnamara} mm", ln=True)
-        pdf.cell(200, 10, txt=f"FMA Angle: {fma} deg", ln=True)
-        pdf.cell(200, 10, txt=f"Soft Tissue E-Line (Li): {dist_li} mm", ln=True)
+        pdf.cell(200, 10, txt=f"McNamara Difference: {diff_mcnamara} mm", ln=True)
+        pdf.cell(200, 10, txt=f"FMA: {fma} degrees", ln=True)
         
-        pdf_output = pdf.output(dest='S').encode('latin-1', 'ignore') # رفع خطا با نادیده گرفتن کاراکترهای غیرمجاز
-        b64 = base64.b64encode(pdf_output).decode()
-        href = f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Report.pdf">Download PDF</a>'
+        pdf_bytes = pdf.output(dest='S')
+        if isinstance(pdf_bytes, str): pdf_bytes = pdf_bytes.encode('latin-1', 'replace')
+        
+        b64 = base64.b64encode(pdf_bytes).decode()
+        href = f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Final_Report.pdf">Download PDF File</a>'
         st.markdown(href, unsafe_allow_html=True)
