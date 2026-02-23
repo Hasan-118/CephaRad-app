@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری و لودر ایمن (Gold Standard) ---
+# --- ۱. معماری و لودر (طبق مرجع Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -46,7 +46,7 @@ def load_aariz_models():
         m = CephaUNet().to(dev); ckpt = torch.load(path, map_location=dev, weights_only=False)
         state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
         m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-        m.eval(); ms.append(m); del state, ckpt
+        m.eval(); ms.append(m)
     gc.collect(); return ms, dev
 
 def predict_fast(img_pil, ms, dev):
@@ -93,7 +93,7 @@ if uploaded_file:
         crop = img.crop((left, top, min(W, cur[0]+box), min(H, cur[1]+box))).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
         draw_m.line((190, 200, 210, 200), fill="red", width=2); draw_m.line((200, 190, 200, 210), fill="red", width=2)
-        res_m = streamlit_image_coordinates(crop, key=f"m_{st.session_state.v}")
+        res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
         if res_m:
             new_c = [int(left + (res_m['x'] * (2*box/400))), int(top + (res_m['y'] * (2*box/400)))]
             if new_c != st.session_state.lms[target_idx]:
@@ -103,34 +103,56 @@ if uploaded_file:
         st.subheader("🖼 Analysis Trace")
         sc = 850 / W; disp = img.resize((850, int(H*sc)), Image.NEAREST)
         draw = ImageDraw.Draw(disp); l = st.session_state.lms
-        # ترسیم خطوط طبق الگو
         def sc_p(idx): return (l[idx][0]*sc, l[idx][1]*sc)
         if all(k in l for k in [10, 4, 15, 5, 14, 3, 8, 27]):
-            draw.line([sc_p(10), sc_p(4)], fill="yellow", width=2)
-            draw.line([sc_p(15), sc_p(5)], fill="orange", width=2)
-            draw.line([sc_p(14), sc_p(3)], fill="purple", width=2)
-            draw.line([sc_p(8), sc_p(27)], fill="pink", width=2)
+            draw.line([sc_p(10), sc_p(4)], fill="yellow", width=2) # S-N
+            draw.line([sc_p(15), sc_p(5)], fill="orange", width=2) # FH
+            draw.line([sc_p(14), sc_p(3)], fill="purple", width=2) # MP
+            draw.line([sc_p(8), sc_p(27)], fill="pink", width=2)   # E-Line
 
         for i, p in l.items():
             color = (255,0,0) if i == target_idx else (0,255,0)
             draw.ellipse([p[0]*sc-4, p[1]*sc-4, p[0]*sc+4, p[1]*sc+4], fill=color)
         streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
 
-    # --- ۳. گزارش هوشمند (Expander) بر اساس الگوی شما ---
+    # --- ۳. گزارش هوشمند (حل مشکل TypeError) ---
     with st.expander("📑 مشاهده گزارش بالینی و تحلیل تخصصی (Steiner & McNamara)"):
-        def get_ang(p1, p2, p3):
-            v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 2)
-        
+        def get_ang(p1, p2, p3, p4=None):
+            # اگر ۴ نقطه داده شود، زاویه بین دو خط مستقل را حساب می‌کند
+            v1 = np.array(p2) - np.array(p1)
+            v2 = np.array(p3) - np.array(p2) if p4 is None else np.array(p4) - np.array(p3)
+            # برای SNA/SNB نقطه مشترک p2 است، برای FMA دو خط جداگانه هستند
+            if p4 is None:
+                v1 = np.array(p1) - np.array(p2)
+                v2 = np.array(p3) - np.array(p2)
+            norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (norm if norm > 0 else 1), -1, 1))), 2)
+
+        def dist_to_line(p, l1, l2):
+            return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
+
+        # محاسبات Steiner & McNamara
         sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-        anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
+        anb = round(sna - snb, 2)
+        fma = get_ang(l[15], l[5], l[14], l[3]) # FH (15-5) vs MP (14-3)
         co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
         co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
         diff_mc = round(co_gn - co_a, 2)
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("SNA / SNB", f"{sna}° / {snb}°", f"ANB: {anb}°")
-        m2.metric("McNamara Diff", f"{diff_mc} mm", "Co-Gn vs Co-A")
-        m3.metric("FMA Angle", f"{fma}°")
+        # Wits Calculation
+        p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+        v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
+        wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
 
-        st.info(f"💡 **تفسیر تشخیصی:** این بیمار در وضعیت **{'Class II' if anb > 4 else 'Class III' if anb < 0 else 'Class I'}** قرار دارد.")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}°")
+        m2.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
+        m3.metric("McNamara Diff", f"{diff_mc} mm")
+        m4.metric("Downs (FMA)", f"{fma}°")
+
+        st.divider()
+        st.subheader("👄 تحلیل بافت نرم (E-Line)")
+        d_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+        d_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+        st.write(f"• فاصله لب بالا تا خط E: **{d_ls} mm**")
+        st.write(f"• فاصله لب پایین تا خط E: **{d_li} mm**")
