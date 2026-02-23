@@ -36,9 +36,9 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر بهینه (Caching لایه‌ای) ---
+# --- ۲. لودر و پیش‌بینی (جامع) ---
 @st.cache_resource
-def load_models_fast():
+def load_all_models():
     ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     dev = torch.device("cpu"); ms = []
     for f, fid in ids.items():
@@ -48,77 +48,95 @@ def load_models_fast():
         m.eval(); ms.append(m)
     return ms, dev
 
-def predict_fast(img, ms, dev):
+def run_prediction(img, ms, dev):
     ow, oh = img.size; r = 512 / max(ow, oh); nw, nh = int(ow*r), int(oh*r)
     canvas = Image.new("L", (512, 512)); canvas.paste(img.convert('L').resize((nw, nh), Image.LANCZOS), ((512-nw)//2, (512-nh)//2))
     t = transforms.ToTensor()(canvas).unsqueeze(0).to(dev)
     with torch.no_grad(): outs = [m(t)[0].cpu().numpy() for m in ms]
     lms = {}
+    ANT, POST = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     for i in range(29):
-        h = outs[1][i] if i in [10, 14, 9, 5, 28, 20] else (outs[2][i] if i in [7, 11, 12, 15] else outs[0][i])
+        h = outs[1][i] if i in ANT else (outs[2][i] if i in POST else outs[0][i])
         y, x = np.unravel_index(np.argmax(h), (512, 512))
         lms[i] = [int((x - (512-nw)//2)/r), int((y - (512-nh)//2)/r)]
     return lms
 
-# --- ۳. رابط کاربری (UI) با مدیریت Rerun ---
-st.set_page_config(layout="wide")
-ms, dev = load_models_fast()
-names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision V8.5", layout="wide")
+ms, dev = load_all_models()
+landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "v" not in st.session_state: st.session_state.v = 0
 
-up = st.sidebar.file_uploader("Cephalogram:", type=['png','jpg'])
-px_size = st.sidebar.number_input("Pixel Size:", 0.01, 1.0, 0.1)
+st.sidebar.header("📏 تنظیمات")
+gender = st.sidebar.radio("جنسیت:", ["آقا", "خانم"])
+px_size = st.sidebar.number_input("Pixel Size (mm):", 0.01, 1.0, 0.1, format="%.4f")
+text_scale = st.sidebar.slider("اندازه متن:", 1, 10, 3)
+
+up = st.sidebar.file_uploader("Cephalogram:", type=['png','jpg','jpeg'])
 
 if up:
     img = Image.open(up).convert("RGB")
     if "lms" not in st.session_state or st.session_state.f != up.name:
-        st.session_state.lms = predict_fast(img, ms, dev); st.session_state.f = up.name
+        st.session_state.lms = run_prediction(img, ms, dev); st.session_state.f = up.name
 
-    tid = st.sidebar.selectbox("Active Point:", range(29), format_func=lambda x: f"{x}: {names[x]}")
-    
-    col1, col2 = st.columns([1, 2])
+    tid = st.sidebar.selectbox("🎯 انتخاب نقطه:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     l = st.session_state.lms
-    
-    with col1: # میکرو-تنظیم بسیار سریع
-        p = l[tid]; sz = 160
+
+    col1, col2 = st.columns([1.2, 2.5])
+    with col1:
+        st.subheader("🔍 اصلاح دقیق")
+        p = l[tid]; sz = 180
         box = (max(0, p[0]-sz//2), max(0, p[1]-sz//2), min(img.width, p[0]+sz//2), min(img.height, p[1]+sz//2))
-        mag = img.crop(box).resize((300, 300))
-        draw_m = ImageDraw.Draw(mag); draw_m.line((140, 150, 160, 150), fill="red"); draw_m.line((150, 140, 150, 160), fill="red")
-        res = streamlit_image_coordinates(mag, key=f"m_{tid}_{st.session_state.v}")
-        if res:
-            new = [int(box[0] + res['x']*(sz/300)), int(box[1] + res['y']*(sz/300))]
+        mag = img.crop(box).resize((400, 400))
+        d_mag = ImageDraw.Draw(mag); d_mag.line((190,200,210,200), fill="red", width=2); d_mag.line((200,190,200,210), fill="red", width=2)
+        res_m = streamlit_image_coordinates(mag, key=f"m_{tid}_{st.session_state.v}")
+        if res_m:
+            new = [int(box[0] + res_m['x']*(sz/400)), int(box[1] + res_m['y']*(sz/400))]
             if l[tid] != new: l[tid] = new; st.session_state.v += 1; st.rerun()
 
-    with col2: # نمایش خطوط با حداقل محاسبات در هر فریم
+    with col2:
+        st.subheader("🖼 نمای گرافیکی (Steiner, Wits, McNamara)")
         canvas = img.copy(); draw = ImageDraw.Draw(canvas)
-        # فقط خطوط اصلی برای جلوگیری از افت سرعت
-        if all(k in l for k in [10,4,0,2,15,5,18,22,17,21]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=2) # SN
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=2) # FH
+        # ترسیم خطوط (برگشت ۱۰۰٪)
+        if all(k in l for k in [10,4,0,2,15,5,18,22,17,21,12,13,8,27]):
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             p_occ = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
-            draw.line([tuple(p_occ[0]), tuple(p_occ[1])], fill="white", width=2) # Occ
+            draw.line([tuple(p_occ[0]), tuple(p_occ[1])], fill="white", width=3) # Occ
+            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2) # Co-Gn
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=2) # E-Line
 
         for i, pos in l.items():
-            draw.ellipse([pos[0]-5, pos[1]-5, pos[0]+5, pos[1]+5], fill=(0,255,0) if i!=tid else (255,0,0))
+            clr = (255,0,0) if i==tid else (0,255,0)
+            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=clr, outline="white")
+            # بازگرداندن نام نقاط با مقیاس متن
+            draw.text((pos[0]+12, pos[1]-12), landmark_names[i], fill=clr, stroke_width=1, stroke_fill="black")
         
-        streamlit_image_coordinates(canvas, width=800, key="main")
+        streamlit_image_coordinates(canvas, width=850, key="main")
 
-    # --- ۴. آنالیز (Wits & McNamara) ---
+    # --- ۴. محاسبات تجمعی و طرح درمان ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)), -1, 1))), 1)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(np.linalg.norm(v1)*np.linalg.norm(v2)+1e-6), -1, 1))), 1)
 
     sna, snb = get_ang(l[10],l[4],l[0]), get_ang(l[10],l[4],l[2])
-    anb = round(sna-snb, 1)
-    # Wits
-    p_occ = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
-    v_occ = (p_occ[1]-p_occ[0])/np.linalg.norm(p_occ[1]-p_occ[0])
-    wits = round((np.dot(np.array(l[0])-p_occ[0], v_occ) - np.dot(np.array(l[2])-p_occ[0], v_occ))*px_size, 1)
+    anb = round(sna - snb, 1)
+    co_a, co_gn = np.linalg.norm(np.array(l[12])-np.array(l[0]))*px_size, np.linalg.norm(np.array(l[12])-np.array(l[13]))*px_size
+    diff_mcn = round(co_gn - co_a, 1)
     
-    st.subheader(f"📊 آنالیز سریع: ANB: {anb} | Wits: {wits}mm")
+    # Wits Calibration
+    p_occ_p, p_occ_a = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
+    v_occ = (p_occ_a - p_occ_p)/np.linalg.norm(p_occ_a - p_occ_p)
+    wits = round((np.dot(np.array(l[0])-p_occ_p, v_occ) - np.dot(np.array(l[2])-p_occ_p, v_occ))*px_size, 1)
     
-    if st.button("📄 صدور طرح درمان مفصل"):
-        diag = "Class II" if wits > 2 else "Class III" if wits < -2 else "Class I"
-        st.write(f"**طرح درمان:** با توجه به ویتز {wits} و رابطه {diag}، اولویت با جابجایی اسکلتال است.")
+    st.header("📑 گزارش و طرح درمان تفصیلی")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Wits Appraisal", f"{wits} mm")
+    c2.metric("ANB Angle", f"{anb}°")
+    c3.metric("McNamara Diff", f"{diff_mcn} mm")
+
+    st.info(f"**طرح درمان:** با توجه به ANB:{anb} و ویتز:{wits}، بیمار در دسته Skeletal Class {'II' if wits>2 else 'III' if wits<-2 else 'I'} قرار دارد. "
+            f"اختلاف مک‌نامارا ({diff_mcn}) نشان‌دهنده نیاز به {'جراحی ست‌بک ماندیبل' if diff_mcn>35 else 'تقویت ماگزیلا' if diff_mcn<20 else 'درمان ردیف‌سازی'} است.")
