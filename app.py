@@ -3,11 +3,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os, gdown, gc, datetime, io
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری و لودر (طبق مرجع Gold Standard) ---
+# --- ۱. معماری و لودر مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -64,7 +64,7 @@ def predict_fast(img_pil, ms, dev):
             res[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return res
 
-# --- ۲. تنظیمات و UI ---
+# --- ۲. تنظیمات UI ---
 st.set_page_config(page_title="Aariz Station V7.8", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
@@ -72,6 +72,7 @@ models, device = load_aariz_models()
 st.sidebar.title("📏 Clinical Settings")
 gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm):", 0.01, 1.0, 0.1, format="%.4f")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 5, 2)
 target_idx = st.sidebar.selectbox("🎯 Active Landmark:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 uploaded_file = st.sidebar.file_uploader("Upload X-ray", type=['png', 'jpg', 'jpeg'])
 
@@ -88,7 +89,7 @@ if uploaded_file:
 
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        cur = st.session_state.lms[target_idx]; box = 120
+        cur = st.session_state.lms[target_idx]; box = 100
         left, top = max(0, cur[0]-box), max(0, cur[1]-box)
         crop = img.crop((left, top, min(W, cur[0]+box), min(H, cur[1]+box))).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
@@ -103,56 +104,50 @@ if uploaded_file:
         st.subheader("🖼 Analysis Trace")
         sc = 850 / W; disp = img.resize((850, int(H*sc)), Image.NEAREST)
         draw = ImageDraw.Draw(disp); l = st.session_state.lms
-        def sc_p(idx): return (l[idx][0]*sc, l[idx][1]*sc)
-        if all(k in l for k in [10, 4, 15, 5, 14, 3, 8, 27]):
-            draw.line([sc_p(10), sc_p(4)], fill="yellow", width=2) # S-N
-            draw.line([sc_p(15), sc_p(5)], fill="orange", width=2) # FH
-            draw.line([sc_p(14), sc_p(3)], fill="purple", width=2) # MP
-            draw.line([sc_p(8), sc_p(27)], fill="pink", width=2)   # E-Line
+        def sp(idx): return (l[idx][0]*sc, l[idx][1]*sc)
 
+        # --- رسم خطوط آنالیز کامل طبق مرجع شما ---
+        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27]):
+            draw.line([sp(10), sp(4)], fill="yellow", width=2)   # S-N
+            draw.line([sp(4), sp(0)], fill="cyan", width=1)     # N-A
+            draw.line([sp(4), sp(2)], fill="magenta", width=1)  # N-B
+            draw.line([sp(15), sp(5)], fill="orange", width=2)  # FH
+            draw.line([sp(14), sp(3)], fill="purple", width=2)  # MP
+            draw.line([sp(8), sp(27)], fill="pink", width=2)    # E-Line
+            # Occ Plane (18,22,17,21)
+            if all(k in l for k in [18,22,17,21]):
+                occ_p = ((l[18][0]+l[22][0])/2*sc, (l[18][1]+l[22][1])/2*sc)
+                occ_a = ((l[17][1]+l[21][0])/2*sc, (l[17][1]+l[21][1])/2*sc)
+                draw.line([occ_p, occ_a], fill="white", width=2)
+
+        # --- رسم لندمارک‌ها و نام‌ها ---
         for i, p in l.items():
-            color = (255,0,0) if i == target_idx else (0,255,0)
-            draw.ellipse([p[0]*sc-4, p[1]*sc-4, p[0]*sc+4, p[1]*sc+4], fill=color)
-        streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
+            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
+            radius = 5 if i == target_idx else 3
+            draw.ellipse([p[0]*sc-radius, p[1]*sc-radius, p[0]*sc+radius, p[1]*sc+radius], fill=color)
+            # نمایش نام لندمارک با مقیاس تنظیمی
+            draw.text((p[0]*sc+7, p[1]*sc-7), landmark_names[i], fill=color)
 
-    # --- ۳. گزارش هوشمند (حل مشکل TypeError) ---
-    with st.expander("📑 مشاهده گزارش بالینی و تحلیل تخصصی (Steiner & McNamara)"):
+        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
+        if res_main:
+            new_c = [int(res_main['x'] / sc), int(res_main['y'] / sc)]
+            if new_c != st.session_state.lms[target_idx]:
+                st.session_state.lms[target_idx] = new_c; st.session_state.v += 1; st.rerun()
+
+    # --- ۳. گزارش تخصصی ---
+    with st.expander("📑 مشاهده گزارش بالینی و تحلیل تخصصی"):
         def get_ang(p1, p2, p3, p4=None):
-            # اگر ۴ نقطه داده شود، زاویه بین دو خط مستقل را حساب می‌کند
-            v1 = np.array(p2) - np.array(p1)
-            v2 = np.array(p3) - np.array(p2) if p4 is None else np.array(p4) - np.array(p3)
-            # برای SNA/SNB نقطه مشترک p2 است، برای FMA دو خط جداگانه هستند
-            if p4 is None:
-                v1 = np.array(p1) - np.array(p2)
-                v2 = np.array(p3) - np.array(p2)
-            norm = np.linalg.norm(v1) * np.linalg.norm(v2)
-            return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (norm if norm > 0 else 1), -1, 1))), 2)
+            v1 = np.array(p1)-np.array(p2) if p4 is None else np.array(p2)-np.array(p1)
+            v2 = np.array(p3)-np.array(p2) if p4 is None else np.array(p4)-np.array(p3)
+            norm = np.linalg.norm(v1)*np.linalg.norm(v2)
+            return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1))), 2)
 
-        def dist_to_line(p, l1, l2):
-            return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
-
-        # محاسبات Steiner & McNamara
         sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-        anb = round(sna - snb, 2)
-        fma = get_ang(l[15], l[5], l[14], l[3]) # FH (15-5) vs MP (14-3)
+        anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
         co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
         co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
-        diff_mc = round(co_gn - co_a, 2)
         
-        # Wits Calculation
-        p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-        v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-        wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}°")
-        m2.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
-        m3.metric("McNamara Diff", f"{diff_mc} mm")
-        m4.metric("Downs (FMA)", f"{fma}°")
-
-        st.divider()
-        st.subheader("👄 تحلیل بافت نرم (E-Line)")
-        d_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-        d_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-        st.write(f"• فاصله لب بالا تا خط E: **{d_ls} mm**")
-        st.write(f"• فاصله لب پایین تا خط E: **{d_li} mm**")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("SNA/SNB (ANB)", f"{sna}°/{snb}°", f"ANB: {anb}°")
+        m2.metric("McNamara Diff", f"{round(co_gn-co_a, 1)} mm", "Co-Gn vs Co-A")
+        m3.metric("FMA Angle", f"{fma}°")
