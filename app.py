@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import os
 import gdown
+import pandas as pd  # برای خروجی CSV اضافه شد
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -196,3 +197,21 @@ if uploaded_file and len(models) == 3:
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+
+        # --- بخش افزایشی جدید: دانلود دیتا در انتهای ستون دوم ---
+        st.subheader("📥 خروجی داده‌ها")
+        results_data = {
+            "Landmark": landmark_names,
+            "X_pixel": [l[i][0] for i in range(29)],
+            "Y_pixel": [l[i][1] for i in range(29)],
+            "Clinical_Note": [diag if i==0 else (fma_desc if i==4 else "") for i in range(29)]
+        }
+        df = pd.DataFrame(results_data)
+        csv_file = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Analysis (CSV)",
+            data=csv_file,
+            file_name=f"aariz_analysis_{uploaded_file.name}.csv",
+            mime="text/csv",
+            help="ذخیره مختصات لندمارک‌ها و نتایج آنالیز در فایل اکسل"
+        )
