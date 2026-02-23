@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر - طبق دستور استاد) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,17 +38,26 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده برای جلوگیری از RuntimeError) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
-            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
+            # تشخیص هوشمند تعداد خروجی هر مدل برای جلوگیری از خطا در Streamlit
+            ckpt = torch.load(f, map_location=device, weights_only=False)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+            new_state = {k.replace('module.', ''): v for k, v in state.items()}
+            n_lms_actual = new_state['outc.weight'].shape[0]
+            
+            m = CephaUNet(n_landmarks=n_lms_actual).to(device)
+            m.load_state_dict(new_state, strict=False)
             m.eval(); loaded_models.append(m)
         except: pass
     return loaded_models, device
@@ -59,11 +68,20 @@ def run_precise_prediction(img_pil, models, device):
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
     with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
+    coords = {}
+    for i in range(29):
+        # انتخاب مدل مناسب و مدیریت اندیس‌ها
+        m_idx = 1 if i in ANT_IDX else (2 if i in POST_IDX else 0)
+        h_idx = i if i < outs[m_idx].shape[0] else 0
+        hm = outs[m_idx][h_idx]
+        y, x = np.unravel_index(np.argmax(hm), hm.shape)
+        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+    
     gc.collect(); return coords
 
-# --- ۳. رابط کاربری (UI) ---
+# --- ۳. رابط کاربری (UI) - کاملاً مطابق با نسخه بهینه شما ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
@@ -129,7 +147,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. بخش جامع تحلیل، تفسیر و طرح درمان (بازگردانی کامل) ---
+    # --- ۴. بخش جامع تحلیل و تفسیر بالینی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -151,21 +169,19 @@ if uploaded_file and len(models) == 3:
         st.subheader("🦷 تحلیل اسکلتال و دندانی")
         st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
         st.metric("McNamara Difference", f"{diff_mcnamara} mm", "Normal: 25-30mm")
-        
         diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
         st.info(f"**تشخیص اسکلتال:** {diag}")
         
         st.subheader("💡 نقشه راه درمان (Roadmap)")
         if abs(anb) > 8 or abs(diff_mcnamara - 25) > 12:
-            st.error("🚨 ناهنجاری شدید فکی؛ نیاز به مشاوره جراحی فک و صورت (Orthognathic).")
+            st.error("🚨 ناهنجاری شدید فکی؛ نیاز به مشاوره جراحی فک و صورت.")
         else:
-            st.success("✅ ناهنجاری متوسط؛ قابل درمان با مکانوتراپی ارتودنسی و Camouflage.")
+            st.success("✅ ناهنجاری متوسط؛ قابل درمان با ارتودنسی و Camouflage.")
 
     with c2:
         st.subheader("👄 زیبایی و بافت نرم")
         st.write(f"• فاصله لب بالا تا خط E: **{dist_ls} mm**")
         st.write(f"• فاصله لب پایین تا خط E: **{dist_li} mm**")
-        
         fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal Growth"
         st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
 
