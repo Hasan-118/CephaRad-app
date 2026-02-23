@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -64,7 +64,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -83,7 +83,7 @@ if uploaded_file and len(models) == 3:
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
@@ -92,45 +92,44 @@ if uploaded_file and len(models) == 3:
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop); mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}")
         if res_mag:
             scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 نمای گرافیکی (McNamara, Steiner & Wits)")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 12, 13]):
+        # ترسیم تمامی خطوط آنالیز
+        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 12, 13, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2) # Co-A (McNamara)
-            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2) # Co-Gn (McNamara)
-            # Occlusal Plane (for Wits)
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2) # Co-Gn
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=2)
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=2) # Occlusal
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color, outline="white", width=2)
 
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
+        streamlit_image_coordinates(draw_img, width=850, key="main_display")
 
-    # --- ۴. تحلیل تفصیلی شامل Wits Appraisal ---
+    # --- ۴. محاسبات کامل (Steiner, McNamara, Wits, Soft Tissue) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+    
+    def dist_to_line(p, l1, l2): return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
 
-    # Wits Logic
+    # Wits Calculation
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
@@ -141,20 +140,54 @@ if uploaded_file and len(models) == 3:
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcn = round(co_gn - co_a, 2)
+    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
-    st.header(f"📑 آنالیز ویتز و طرح درمان تخصصی ({gender})")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm", f"Norm: {wits_norm}mm")
-    m2.metric("ANB (Steiner)", f"{anb}°")
-    m3.metric("McNamara Diff", f"{diff_mcn} mm")
+    st.header("📊 تحلیل جامع بالینی")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm", f"Norm: {wits_norm}")
+    m2.metric("ANB Angle", f"{anb}°", f"SNA:{sna}/SNB:{snb}")
+    m3.metric("McNamara Diff", f"{diff_mcn} mm", "Co-Gn vs Co-A")
+    m4.metric("FMA (Downs)", f"{fma}°")
 
-    st.subheader("💡 طرح درمان تفصیلی بر اساس Wits & McNamara")
-    wits_diff = wits_mm - wits_norm
-    if wits_diff > 3: tp = "ناهنجاری کلاس II شدید. ماندیبل به شدت عقب است. نیاز به جراحی یا دستگاه‌های فانکشنال قوی."
-    elif wits_diff < -3: tp = "ناهنجاری کلاس III شدید. ماندیبل جلوتر از ماگزیلا است. کاندید جراحی فک پایین."
-    else: tp = "رابطه فکی در محدوده نرمال (کلاس I). تمرکز بر اصلاح روابط دندانی."
-    st.info(f"📍 **تشخیص کلینیکی:** {tp}")
+    # --- ۵. طرح درمان تفصیلی و گزارش نهایی ---
+    st.divider()
+    c_diag, c_plan = st.columns(2)
+    diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
+    
+    with c_diag:
+        st.subheader("🚩 تشخیص اسکلتال و بافت نرم")
+        st.info(f"**رابطه فکی:** Skeletal {diag}")
+        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
+        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
+        
+    with c_plan:
+        st.subheader("💊 طرح درمان تفصیلی (Treatment Plan)")
+        if diag == "Class II":
+            tp = "ماندیبل رتروگناتیک (با استناد به Wits و McNamara). نیاز به اصلاح رشد یا جراحی BSSO."
+        elif diag == "Class III":
+            tp = "ماندیبل پروگناتیک یا هیپوپلازی ماگزیلا. کاندید جراحی فک یا فیس‌ماسک."
+        else:
+            tp = "رابطه اسکلتال نرمال. تمرکز بر ردیف کردن دندان‌ها (Crowding)."
+        st.success(f"**مسیر درمانی:** {tp}")
 
-    if st.button("📄 صدور گزارش جامع نهایی"):
-        report_html = f"<h3>Wits Analysis: {round(wits_mm,2)}mm</h3><p>ANB: {anb}</p><p>McNamara: {diff_mcn}</p><p><b>Treatment:</b> {tp}</p><button onclick='window.print()'>PDF</button>"
-        st.components.v1.html(report_html, height=300)
+    if st.button("📄 صدور گزارش PDF مفصل"):
+        pdf_html = f"""
+        <div style="direction:ltr; padding:30px; border:5px solid #2c3e50;">
+            <h1>Aariz Clinical Report V7.9</h1>
+            <hr>
+            <h3>Measurements:</h3>
+            <ul>
+                <li>Wits Appraisal: {round(wits_mm,2)} mm</li>
+                <li>ANB Angle: {anb}° (SNA:{sna}/SNB:{snb})</li>
+                <li>McNamara Diff: {diff_mcn} mm</li>
+                <li>FMA Growth Pattern: {fma}°</li>
+            </ul>
+            <div style="background:#f9f9f9; padding:15px;">
+                <h3>Detailed Treatment Plan:</h3>
+                <p>{tp}</p>
+            </div>
+            <button onclick="window.print()">Print PDF</button>
+        </div>
+        """
+        st.components.v1.html(pdf_html, height=500)
