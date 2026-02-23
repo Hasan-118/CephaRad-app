@@ -39,7 +39,7 @@ class CephaUNet(nn.Module):
         return self.outc(x)
 
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
-@st.cache_resource(ttl=3600)
+@st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     device = torch.device("cpu"); loaded_models = []
@@ -68,7 +68,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.5", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V11.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -94,7 +94,7 @@ if uploaded_file and len(models) == 3:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.Resampling.LANCZOS)
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
@@ -107,7 +107,7 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم تمام خطوط آنالیز مرجع (بدون تغییر در منطق)
+        # ترسیم تمام خطوط آنالیز مرجع
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
@@ -120,6 +120,7 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
             draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
+        # ترسیم Co-A و Co-Gn و N-Perp
         if all(k in l for k in [4, 15, 5, 12, 0, 13]):
             v_fh = np.array(l[5]) - np.array(l[15])
             v_perp = np.array([-v_fh[1], v_fh[0]])
@@ -190,6 +191,7 @@ if uploaded_file and len(models) == 3:
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
 
+    # --- ۶. دکمه چاپ نهایی (ایمن سازی شده برای Cloud) ---
     if st.button("📥 مشاهده گزارش نهایی و پرینت"):
         report_html = f"""
         <div style="font-family: Arial; padding: 20px; border: 3px solid black; direction: ltr;">
