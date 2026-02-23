@@ -1,76 +1,75 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-import numpy as np
-import os
-import gdown
-import gc
-from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
-from streamlit_image_coordinates import streamlit_image_coordinates
+from PIL import Image
+import numpy as np
+import pandas as pd
+import gdown
+import os
+import plotly.graph_objects as go
 
-# --- ۱. معماری مرجع Aariz ---
+# --- CONFIGURATION & GOLD STANDARD REFERENCE ---
+VERSION = "V7.8"
+MODEL_DIR = "models"
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# مدل عمومی و متخصص‌ها (طبق دستور شما: ۳ مدل بارگذاری شوند)
+MODELS_INFO = {
+    "General": {"id": "YOUR_GD_ID_1", "path": f"{MODEL_DIR}/general_v78.pth"},
+    "Expert_1": {"id": "YOUR_GD_ID_2", "path": f"{MODEL_DIR}/expert1_v78.pth"},
+    "Expert_2": {"id": "YOUR_GD_ID_3", "path": f"{MODEL_DIR}/expert2_v78.pth"}
+}
+
+# --- ARCHITECTURE (DoubleConv & CephaUNet) ---
 class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
-        super().__init__()
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True), nn.Dropout2d(p=dropout_prob),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
         )
-    def forward(self, x): return self.conv(x)
+
+    def forward(self, x):
+        return self.conv(x)
 
 class CephaUNet(nn.Module):
-    def __init__(self, n_landmarks=29):
-        super().__init__()
-        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
-        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2); self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2); self.conv_up3 = DoubleConv(128, 64)
-        self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
+    def __init__(self, in_channels=1, out_channels=29):
+        super(CephaUNet, self).__init__()
+        self.ups = nn.ModuleList()
+        self.downs = nn.ModuleList()
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Downsampling
+        features = [64, 128, 256, 512]
+        for feature in features:
+            self.downs.append(DoubleConv(in_channels, feature))
+            in_channels = feature
+
+        # Upsampling
+        for feature in reversed(features):
+            self.ups.append(nn.ConvTranspose2d(feature*2, feature, kernel_size=2, stride=2))
+            self.ups.append(DoubleConv(feature*2, feature))
+
+        self.bottleneck = DoubleConv(features[-1], features[-1]*2)
+        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+
     def forward(self, x):
-        x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
-        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
-        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
-        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
-        return self.outc(x)
+        skip_connections = []
+        for down in self.downs:
+            x = down(x)
+            skip_connections.append(x)
+            x = self.pool(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (دقیقاً طبق کد شما) ---
-@st.cache_resource
-def load_aariz_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    device = torch.device("cpu"); loaded_models = []
-    for f, fid in model_ids.items():
-        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
-        try:
-            m = CephaUNet(n_landmarks=29).to(device)
-            ckpt = torch.load(f, map_location=device)
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-            m.eval(); loaded_models.append(m)
-        except: pass
-    return loaded_models, device
+        x = self.bottleneck(x)
+        skip_connections = skip_connections[::-1]
 
-def run_precise_prediction(img_pil, models, device):
-    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), 
-                  int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] 
-              for i in range(29)}
-    gc.collect(); return coords
-
-# --- ۳. رابط کاربری (UI) و بخش آنالیز ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
-# ادامه کد شامل UI، ترسیم خطوط آنالیز و گزارش بالینی...
+        for idx in range(0, len(self.ups), 2):
+            x = self.ups[idx](x)
+            skip_connection = skip_connections[idx//2]
+            concat_skip = torch.cat((skip_connection, x), dim=1)
+            x = self.ups[idx+1](concat_skip
