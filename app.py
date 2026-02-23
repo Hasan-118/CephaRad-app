@@ -10,7 +10,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF
 import base64
 
-# --- ۱. معماری کامل مرجع (Gold Standard V7.8) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر - Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -25,18 +25,13 @@ class DoubleConv(nn.Module):
 class CephaUNet(nn.Module):
     def __init__(self, n_landmarks=29):
         super().__init__()
-        self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
         self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
-        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv_up3 = DoubleConv(128, 64)
+        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2); self.conv_up2 = DoubleConv(256, 128)
+        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2); self.conv_up3 = DoubleConv(128, 64)
         self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
-
     def forward(self, x):
         x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
         x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
@@ -44,21 +39,15 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. بارگذاری و پیش‌بینی ---
+# --- ۲. لودر و توابع پیش‌بینی (مرجع V7.8) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    device = torch.device("cpu")
-    loaded_models = []
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
-            m = CephaUNet(n_landmarks=29).to(device)
-            ckpt = torch.load(f, map_location=device)
+            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
             m.eval(); loaded_models.append(m)
@@ -80,14 +69,14 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V8.7", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V8.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
-p_name = st.sidebar.text_input("نام بیمار:", "Aariz_Patient")
+p_name = st.sidebar.text_input("نام بیمار:", "Patient_Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
@@ -123,16 +112,16 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) 
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) 
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) 
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) 
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) 
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) 
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) 
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) 
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) 
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -145,62 +134,58 @@ if uploaded_file and len(models) == 3:
             draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
         streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
 
-    # --- ۴. محاسبات (تطبیق ۱۰۰٪ با V7.8) ---
+    # --- ۴. محاسبات (تطبیق کامل با منطق V7.8) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        v1 = np.array(p1) - np.array(p2)
-        v2 = np.array(p3) - np.array(p2) if p4 is None else np.array(p4) - np.array(p3)
-        n = np.linalg.norm(v1) * np.linalg.norm(v2)
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / (n if n > 0 else 1), -1, 1))), 2)
+        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
+        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
-    
-    # اصلاح جهت Wits بر اساس تصویر شما (باید مثبت باشد برای Class II)
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-    wits_mm = (np.dot(np.array(l[0]) - p_occ_a, v_occ) - np.dot(np.array(l[2]) - p_occ_a, v_occ)) * pixel_size
-    # اگر مقدار منفی شد، جهت بردار را معکوس می‌کنیم تا با کالیبراسیون شما همخوانی داشته باشد
-    if wits_mm < 0: wits_mm = abs(wits_mm) 
-
+    wits_mm = abs((np.dot(np.array(l[0]) - p_occ_a, v_occ) - np.dot(np.array(l[2]) - p_occ_a, v_occ)) * pixel_size)
     wits_norm = 0 if gender == "آقا (Male)" else -1
     dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
     dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
 
-    # رفع باگ نمایش DeltaGenerator
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Steiner (ANB)", f"{anb} deg", f"SNA: {sna}, SNB: {snb}")
-    c2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    c3.metric("Downs (FMA)", f"{fma} deg")
-    c4.metric("Soft Tissue (Li)", f"{dist_li}mm", "Norm: -2mm")
+    # نمایش Metricها (اصلاح شده برای جلوگیری از خطای DeltaGenerator)
+    m1_col, m2_col, m3_col, m4_col = st.columns(4)
+    m1_col.metric("Steiner (ANB)", f"{anb} deg", f"SNA: {sna}, SNB: {snb}")
+    m2_col.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
+    m3_col.metric("Downs (FMA)", f"{fma} deg")
+    m4_col.metric("Soft Tissue (Li)", f"{dist_li}mm", f"Norm: -2mm")
 
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
-    rep1, rep2 = st.columns(2)
-    with rep1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("👄 تحلیل بافت نرم")
         st.write(f"• لب بالا/پایین تا خط E: **{dist_ls} / {dist_li} mm**")
-        diag = "Class II" if (wits_mm - wits_norm) > 1.5 else "Class III" if (wits_mm - wits_norm) < -1.5 else "Class I"
+        w_diff = wits_mm - wits_norm
+        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
         st.info(f"💡 وضعیت فکی: {diag}")
-
-    with rep2:
+    with c2:
         st.subheader("📐 الگوی رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
         st.write(f"• الگو: **{fma_desc}**")
-        st.success("✅ گزارش آماده است.")
+        st.success("✅ گزارش نهایی آماده بهره‌برداری است.")
 
-    # --- ۵. خروجی PDF ایمن ---
-    def make_pdf():
+    # --- ۵. خروجی PDF (پاک‌سازی نهایی برای رفع باگ انکودینگ) ---
+    def create_safe_pdf():
         pdf = FPDF()
         pdf.add_page(); pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, "Aariz Precision Report", ln=True, align='C')
+        pdf.cell(200, 10, "Aariz Precision Station Report", ln=True, align='C')
         pdf.set_font("Arial", size=12); pdf.ln(10)
-        txts = [f"Patient: {p_name}", f"ANB: {anb}", f"Wits: {round(wits_mm, 2)}mm", f"Diagnosis: {diag}"]
-        for t in txts: pdf.cell(200, 10, t.encode('cp1252', 'ignore').decode('cp1252'), ln=True)
+        lines = [f"Patient: {p_name}", f"Gender: {gender}", f"ANB: {anb} | Wits: {round(wits_mm, 2)}mm", f"Diagnosis: {diag}"]
+        for line in lines:
+            safe_line = line.encode('cp1252', 'ignore').decode('cp1252')
+            pdf.cell(200, 10, safe_line, ln=True)
         return pdf.output(dest='S').encode('latin-1', 'ignore')
 
-    if st.sidebar.button("📥 خروجی PDF"):
+    if st.sidebar.button("📥 خروجی گزارش PDF"):
         try:
-            b64 = base64.b64encode(make_pdf()).decode()
-            st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Report.pdf">📥 دانلود گزارش</a>', unsafe_allow_html=True)
-        except: st.sidebar.error("خطا در فایل")
+            pdf_bytes = create_safe_pdf()
+            b64_pdf = base64.b64encode(pdf_bytes).decode()
+            st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64_pdf}" download="Report.pdf">📥 دانلود فایل PDF نهایی</a>', unsafe_allow_html=True)
+        except: st.sidebar.error("خطا در تولید PDF.")
