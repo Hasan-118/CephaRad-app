@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مرجع Aariz (بدون هیچ تغییری) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -41,11 +41,7 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -72,7 +68,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V12.9", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V13.0", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -111,7 +107,6 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
@@ -146,6 +141,7 @@ if uploaded_file and len(models) == 3:
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
+    
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
@@ -159,7 +155,7 @@ if uploaded_file and len(models) == 3:
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع، تفسیر و طرح درمان (بخش‌های بازگردانده شده) ---
+    # --- ۵. گزارش جامع، تفسیر و طرح درمان (دقیقاً طبق نسخه طلایی) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
@@ -186,6 +182,6 @@ if uploaded_file and len(models) == 3:
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
 
-    # دکمه گزارش نهایی
-    if st.button("📥 مشاهده گزارش نهایی برای پرینت"):
-        st.info("گزارش با موفقیت آماده شد. می‌توانید از صفحه اسکرین‌شات بگیرید یا از قابلیت Print مرورگر استفاده کنید.")
+    if st.button("📥 خروجی نهایی برای پرونده"):
+        st.balloons()
+        st.info("تحلیل با موفقیت انجام شد. تمامی پارامترهای اسکلتال و بافت نرم در گزارش لحاظ شده‌اند.")
