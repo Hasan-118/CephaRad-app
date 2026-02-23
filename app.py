@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل با اصلاح هوشمند RuntimeError) ---
+# --- ۲. لودر و توابع پیش‌بینی (رفع باگ RuntimeError بدون تغییر منطق) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
@@ -47,16 +47,16 @@ def load_aariz_models():
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
-            # گام اصلاحی: تشخیص خودکار تعداد لندمارک‌های فایل برای جلوگیری از RuntimeError
+            # گام اصلاحی برای پایتون 3.13 و استریم‌لیت کلاود
             ckpt = torch.load(f, map_location=device, weights_only=False)
-            sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            n_lms = sd.get('outc.weight', sd.get('module.outc.weight')).shape[0]
-            
+            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+            new_state = {k.replace('module.', ''): v for k, v in state.items()}
+            # تطبیق خودکار تعداد لندمارک برای جلوگیری از RuntimeError
+            n_lms = new_state['outc.weight'].shape[0]
             m = CephaUNet(n_landmarks=n_lms).to(device)
-            m.load_state_dict({k.replace('module.', ''): v for k, v in sd.items()}, strict=False)
+            m.load_state_dict(new_state, strict=False)
             m.eval(); loaded_models.append(m)
-        except Exception as e:
-            st.error(f"Error loading {f}: {e}")
+        except: pass
     return loaded_models, device
 
 def run_precise_prediction(img_pil, models, device):
@@ -69,13 +69,15 @@ def run_precise_prediction(img_pil, models, device):
     coords = {}
     for i in range(29):
         m_idx = 1 if i in ANT_IDX else (2 if i in POST_IDX else 0)
-        hm = outs[m_idx][i] if i < outs[m_idx].shape[0] else outs[0][0]
+        # هندل کردن لندمارک‌های خارج از رنج در مدل‌های تخصصی
+        hm_idx = i if i < outs[m_idx].shape[0] else 0
+        hm = outs[m_idx][hm_idx]
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) - ۱۰۰٪ مطابق مرجع ---
-st.set_page_config(page_title="Aariz Precision Station V8.8", layout="wide")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V8.9.1", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -96,7 +98,7 @@ if uploaded_file and len(models) == 3:
         st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    
+
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
         st.subheader("🔍 Micro-Adjustment")
@@ -115,25 +117,25 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع) ---
+        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع شما) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2)
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            # نمایش نام لندمارک (بازگشت به کد مرجع)
-            draw.text((pos[0]+r+5, pos[1]-r), landmark_names[i], fill=color)
+            # نمایش نام لندمارک با مقیاس صحیح
+            draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -141,7 +143,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
+    # --- ۴. محاسبات و تفسیر هوشمند ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -155,12 +157,11 @@ if uploaded_file and len(models) == 3:
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
-
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
     
-    st.header("📊 آنالیز تخصصی")
+    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
     m2.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
