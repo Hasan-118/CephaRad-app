@@ -42,7 +42,11 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -68,8 +72,8 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) - بازگشت به ساختار V7.8 ---
-st.set_page_config(page_title="Aariz Precision Station V9.4", layout="wide")
+# --- ۳. رابط کاربری (UI) - حفظ کامل ساختار V7.8 ---
+st.set_page_config(page_title="Aariz Precision Station V9.5", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -113,7 +117,6 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و اصلاح نقاط")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
@@ -143,7 +146,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + افزایشی) ---
+    # --- ۴. محاسبات تکمیلی و گزارش (Incremental Add-ons) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -155,35 +158,25 @@ if uploaded_file and len(models) == 3:
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
 
-    # Wits calculation
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-    wits_norm = 0 if gender == "آقا (Male)" else -1
-    
-    # E-Line distances
-    dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
-    dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
-    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
-    m4.metric("Downs (FMA)", f"{fma}°")
+    m2.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
+    m3.metric("Wits Appraisal", f"{round(wits_mm, 2)} mm")
+    m4.metric("FMA Angle", f"{fma}°")
 
-    # --- ۵. گزارش جامع و خروجی PDF (افزایشی نهایی) ---
-    st.divider()
-    st.header(f"📑 گزارش بالینی نهایی ({p_name})")
-    
-    if st.sidebar.button("📥 تولید و دانلود PDF گزارش"):
+    # --- ۵. خروجی PDF افزایشی ---
+    if st.sidebar.button("📥 خروجی گزارش PDF کامل"):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16); pdf.cell(200, 10, "Aariz Precision Clinical Report", ln=True, align='C')
+        pdf.set_font("Arial", 'B', 16); pdf.cell(200, 10, "Aariz Precision Station - Clinical Report", ln=True, align='C')
         pdf.set_font("Arial", size=12); pdf.ln(10)
         pdf.cell(200, 10, f"Patient: {p_name} | Gender: {gender}", ln=True)
-        pdf.cell(200, 10, f"ANB Angle: {anb} | FMA Angle: {fma}", ln=True)
+        pdf.cell(200, 10, f"ANB: {anb} | FMA: {fma}", ln=True)
+        pdf.cell(200, 10, f"McNamara Diff (Effective Length): {diff_mcnamara} mm", ln=True)
         pdf.cell(200, 10, f"Wits Appraisal: {round(wits_mm, 2)} mm", ln=True)
-        pdf.cell(200, 10, f"McNamara (Co-Gn - Co-A): {diff_mcnamara} mm", ln=True)
-        pdf.cell(200, 10, f"E-Line Distance: Upper {dist_ls}mm / Lower {dist_li}mm", ln=True)
         b64 = base64.b64encode(pdf.output(dest='S').encode('latin-1')).decode()
-        st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Report_{p_name}.pdf">📥 کلیک برای دانلود فایل PDF</a>', unsafe_allow_html=True)
+        st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Report_{p_name}.pdf">📥 دانلود گزارش PDF</a>', unsafe_allow_html=True)
