@@ -109,7 +109,7 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- ۱. خطوط آنالیز مرجع شما (Steiner & soft tissue) ---
+        # --- ۱. خطوط آنالیز مرجع (Steiner & soft tissue) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
@@ -120,16 +120,13 @@ if uploaded_file and len(models) == 3:
 
         # --- ۲. گرافیک اختصاصی McNamara (افزایشی) ---
         if all(k in l for k in [4, 15, 5, 12, 0, 13]):
-            # رسم خط N-Perpendicular (عمود بر FH از مبدا N)
             n_pt, po_pt, or_pt = np.array(l[4]), np.array(l[15]), np.array(l[5])
             v_fh = or_pt - po_pt
-            v_perp = np.array([-v_fh[1], v_fh[0]]) # چرخش ۹۰ درجه برای عمود
-            v_perp = v_perp / np.linalg.norm(v_perp) * 300 # طول خط
-            draw.line([tuple(n_pt), tuple(n_pt + v_perp)], fill="#00FF00", width=2) # N-Perp Line
-            
-            # رسم بردارهای McNamara
-            draw.line([tuple(l[12]), tuple(l[0])], fill="#00FFFF", width=4) # Co-A (Maxilla Length)
-            draw.line([tuple(l[12]), tuple(l[13])], fill="#FF00FF", width=4) # Co-Gn (Mandible Length)
+            v_perp = np.array([-v_fh[1], v_fh[0]])
+            v_perp = v_perp / np.linalg.norm(v_perp) * 300
+            draw.line([tuple(n_pt), tuple(n_pt + v_perp)], fill="#00FF00", width=2) # N-Perp
+            draw.line([tuple(l[12]), tuple(l[0])], fill="#00FFFF", width=4) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="#FF00FF", width=4) # Co-Gn
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -156,7 +153,6 @@ if uploaded_file and len(models) == 3:
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
 
     st.header("🦷 پنل تخصصی تحلیل McNamara")
     c1, c2, c3 = st.columns(3)
@@ -167,10 +163,10 @@ if uploaded_file and len(models) == 3:
     status_color = "normal" if abs(diff_mcnamara - norm_val) < 3 else "inverse"
     c3.metric("Maxillo-Mandibular Diff", f"{diff_mcnamara} mm", f"Norm: {norm_val} mm", delta_color=status_color)
 
-    st.subheader("💡 تفسیر و نقشه راه درمان (Diagnostic Roadmap)")
+    st.subheader("💡 تفسیر و نقشه راه درمان")
     if diff_mcnamara < (norm_val - 4):
-        st.error("🚨 وضعیت اسکلتی Class II: کوتاهی مندیبل نسبت به ماگزیلا مشهود است. پیشنهاد: Functional Appliances.")
+        st.error("🚨 وضعیت اسکلتی Class II: کوتاهی مندیبل نسبت به ماگزیلا مشهود است.")
     elif diff_mcnamara > (norm_val + 4):
-        st.warning("⚠️ وضعیت اسکلتی Class III: رشد بیش از حد مندیبل یا عقب‌ماندگی ماگزیلا. ارزیابی جراحی فک.")
+        st.warning("⚠️ وضعیت اسکلتی Class III: رشد بیش از حد مندیبل یا عقب‌ماندگی ماگزیلا.")
     else:
-        st.success("✅ هماهنگی اسکلتی مطلوب (Class I Harmony): نسبت طول فکین در محدوده نرمال است.")
+        st.success("✅ هماهنگی اسکلتی مطلوب (Class I Harmony).")
