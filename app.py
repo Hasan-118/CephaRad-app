@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری ثابت Aariz (بدون تغییر) ---
+# --- ۱. معماری ثابت و بدون تغییر Aariz ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. بارگذاری خودکار مدل‌ها (طبق دستور Aariz Station V2) ---
+# --- ۲. لودر مدل‌ها (تثبیت شده در حافظه) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -72,8 +72,8 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. پیکربندی و رابط کاربری Streamlit ---
-st.set_page_config(page_title="Aariz Precision Station V15.0", layout="wide")
+# --- ۳. رابط کاربری مرجع ---
+st.set_page_config(page_title="Aariz Precision Station V15.5", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -82,7 +82,6 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 st.sidebar.header("📏 تنظیمات بیمار")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
@@ -131,7 +130,7 @@ if uploaded_file and len(models) == 3:
 
         st.image(draw_img, use_container_width=True)
 
-    # --- ۴. محاسبات کمال (Steiner, McNamara, Wits, Soft Tissue) ---
+    # --- ۴. بخش محاسبات (بدون دستکاری) ---
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
@@ -141,40 +140,41 @@ if uploaded_file and len(models) == 3:
     co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 1)
     co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 1)
     diff_mcnamara = round(co_gn - co_a, 1)
-    
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = round((np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size, 2)
     wits_norm = 0 if gender == "آقا (Male)" else -1
-    
     dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / np.linalg.norm(np.array(l[27])-np.array(l[8])) * pixel_size, 2)
     dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / np.linalg.norm(np.array(l[27])-np.array(l[8])) * pixel_size, 2)
 
-    # --- ۵. گزارش کامل و طرح درمان (Roadmap) ---
+    # --- ۵. گزارش جامع بالینی و نقشه راه درمان (Diagnostic Roadmap) ---
     st.divider()
-    st.header(f"📑 گزارش جامع بالینی ({gender})")
+    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
+    c_diag1, c_diag2 = st.columns(2)
+    with c_diag1:
+        st.subheader("💡 نقشه راه درمان")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• **وضعیت اسکلتال:** {diag} (Wits: {wits_mm}mm)")
-        st.write(f"• **رابطه فکی (ANB):** {anb}°")
-        if abs(anb) > 8: st.error("🚨 دیسکرپانسی شدید: جراحی فک پیشنهاد می‌شود.")
+        st.write(f"• **وضعیت فکی:** {diag} (Wits: {wits_mm} mm)")
+        st.write(f"• **رابطه اسکلتال (ANB):** {anb}°")
+        if abs(anb) > 8: st.error("🚨 دیسکرپانسی شدید: نیاز به جراحی فک بالا.")
         else: st.success("✅ درمان ارتودنسی استاندارد.")
 
-        st.subheader("👄 تحلیل بافت نرم")
-        st.write(f"• لب بالا تا خط E: {dist_ls} mm")
-        st.write(f"• لب پایین تا خط E: {dist_li} mm")
+        st.subheader("👄 زیبایی و بافت نرم")
+        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
+        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
+        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ Convex Profile (مردانه)")
+        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ Lip Protrusion (زنانه)")
 
-    with c2:
-        st.subheader("📐 زوایا و ابعاد")
+    with c_diag2:
+        st.subheader("📐 تحلیل زوایا و ابعاد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی رشد اسکلتال: **{fma_desc}** (FMA: {fma}°)")
+        st.write(f"• الگوی رشد: **{fma_desc}** (FMA: {fma}°)")
         st.write(f"• طول موثر فک بالا (Co-A): {co_a} mm")
         st.write(f"• طول موثر فک پایین (Co-Gn): {co_gn} mm")
         st.write(f"• اختلاف مک‌نامارا: {diff_mcnamara} mm")
 
-    if st.button("📥 مشاهده گزارش نهایی"):
-        st.info("تمام پارامترهای مرجع (Steiner, McNamara, Wits, Ricketts) محاسبه و ثبت شدند.")
+    if st.button("📥 خروجی نهایی برای پرونده"):
+        st.balloons()
+        st.write("گزارش با تمامی پارامترهای مرجع (Steiner, McNamara, Wits, Ricketts) ثبت شد.")
