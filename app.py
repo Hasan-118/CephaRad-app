@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,10 +38,12 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی سرعت با Caching) ---
+# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده برای سرعت) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+                 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+                 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -53,10 +55,11 @@ def load_aariz_models():
         except: pass
     return loaded_models, device
 
-# بهینه‌سازی سرعت: پیش‌بینی فقط یکبار انجام می‌شود
-@st.cache_data(show_spinner="در حال پردازش هوشمند تصویر...")
-def get_cached_prediction(_img_pil, _models, _device):
-    ow, oh = _img_pil.size; img_gray = _img_pil.convert('L'); ratio = 512 / max(ow, oh)
+@st.cache_data(show_spinner="Running AI Analysis...")
+def run_precise_prediction_cached(img_pil_bytes, _models, _device):
+    # دریافت بایت‌ها برای کش کردن صحیح
+    img_pil = Image.open(img_pil_bytes).convert("RGB")
+    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
     nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(_device)
@@ -70,54 +73,33 @@ def get_cached_prediction(_img_pil, _models, _device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.1", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.2", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 تنظیمات آنالیز")
-gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size:", 0.01, 1.0, 0.1, 0.001)
-text_scale = st.sidebar.slider("مقیاس متن:", 10, 50, 20)
+st.sidebar.header("📏 تنظیمات بیمار")
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
+    
+    # استفاده از نسخه کش شده برای جلوگیری از اجرای مجدد مدل در هر کلیک
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.lms = get_cached_prediction(raw_img, models, device)
+        uploaded_file.seek(0)
+        st.session_state.lms = run_precise_prediction_cached(uploaded_file, models, device)
         st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1.2, 2.5])
     with col1:
+        st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.NEAREST) # NEAREST برای سرعت بیشتر در نمایش
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((190, 200, 210, 200), fill="red", width=2); mag_draw.line((200, 190, 200, 210), fill="red", width=2)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
-
-    with col2:
-        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        # ترسیم خطوط (فقط خطوط اصلی برای حفظ سرعت در رندر ابری)
-        if all(k in l for k in [10, 4, 15, 5, 14, 3]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-
-        for i, pos in l.items():
-            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=color)
-            draw.text((pos[0]+10, pos[1]-10), landmark_names[i], fill=color, font_size=text_scale)
-        st.image(draw_img, use_container_width=True)
-
-    # بخش محاسبات (بدون تغییر منطق)
-    sna = round(180 - np.degrees(np.arccos(np.dot((np.array(l[10])-l[4]), (np.array(l[0])-l[4]))/(np.linalg.norm(np.array(l[10])-l[4])*np.linalg.norm(np.array(l[0])-l[4])))), 2)
-    st.metric("SNA Angle", f"{sna}°")
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400
