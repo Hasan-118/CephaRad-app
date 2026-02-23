@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -41,11 +40,7 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -156,6 +151,7 @@ if uploaded_file and len(models) == 3:
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
     
+    # McNamara Incremental Logic
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
@@ -178,9 +174,6 @@ if uploaded_file and len(models) == 3:
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
-    diag = "Class II" if (wits_mm - wits_norm) > 1.5 else "Class III" if (wits_mm - wits_norm) < -1.5 else "Class I"
-    fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-    
     with c1:
         st.subheader("👄 تحلیل بافت نرم و زیبایی")
         st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
@@ -189,6 +182,8 @@ if uploaded_file and len(models) == 3:
         elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
 
         st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
+        w_diff = wits_mm - wits_norm
+        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
         st.write(f"• **وضعیت فکی:** {diag}")
         if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
             st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
@@ -197,17 +192,7 @@ if uploaded_file and len(models) == 3:
             
     with c2:
         st.subheader("📐 تحلیل زوایا و رشد")
+        fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
-
-        # --- افزونه افزایشی (Incremental) برای PDF ---
-        if st.button("📄 دریافت گزارش PDF"):
-            pdf_html = f"""
-            <div style="direction:ltr; padding:20px; border:1px solid #ccc; font-family:Arial;">
-                <h2 style="color:#2c3e50;">Aariz Precision Report</h2>
-                <hr><p>Skeletal Class: {diag}</p><p>ANB: {anb}°</p><p>Wits: {round(wits_mm,2)}mm</p>
-                <button onclick="window.print()">Print PDF</button>
-            </div>
-            """
-            st.components.v1.html(pdf_html, height=250)
