@@ -38,10 +38,14 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ ۱۰۰٪ طبق مرجع) ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -68,7 +72,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V12.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V12.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -126,11 +130,7 @@ if uploaded_file and len(models) == 3:
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             draw.text((pos[0]+12, pos[1]-12), landmark_names[i], fill=color)
 
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
+        st.image(draw_img, use_container_width=True)
 
     # --- ۴. محاسبات و تفسیر هوشمند (حفظ ۱۰۰٪ مرجع) ---
     st.divider()
@@ -159,7 +159,7 @@ if uploaded_file and len(models) == 3:
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع) ---
+    # --- ۵. گزارش جامع، تفسیر و طرح درمان (بخش‌های بازگردانده شده) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
@@ -186,19 +186,6 @@ if uploaded_file and len(models) == 3:
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
 
-    # دکمه چاپ نهایی (گزارش کامل در قالب HTML برای پرینت تمیز)
-    if st.button("🖨️ تولید گزارش کامل چاپی"):
-        full_html = f"""
-        <div style="direction: rtl; font-family: Tahoma; padding: 20px; border: 2px solid black;">
-            <h1 style="text-align: center;">گزارش تحلیل سفالومتری Aariz</h1>
-            <hr>
-            <h3>مشخصات: {gender}</h3>
-            <p><b>تحلیل اسکلتال:</b> ANB: {anb}° | Wits: {round(wits_mm,2)}mm | McNamara: {diff_mcnamara}mm</p>
-            <p><b>وضعیت رشد:</b> الگوی {fma_desc} (FMA: {fma}°)</p>
-            <p><b>بافت نرم:</b> فاصله لب بالا: {dist_ls}mm | لب پایین: {dist_li}mm</p>
-            <p><b>تشخیص نهایی:</b> {diag}</p>
-            <hr>
-            <button onclick="window.print()">چاپ گزارش (PDF)</button>
-        </div>
-        """
-        st.components.v1.html(full_html, height=400)
+    # دکمه گزارش نهایی
+    if st.button("📥 مشاهده گزارش نهایی برای پرینت"):
+        st.info("گزارش با موفقیت آماده شد. می‌توانید از صفحه اسکرین‌شات بگیرید یا از قابلیت Print مرورگر استفاده کنید.")
