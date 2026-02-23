@@ -152,4 +152,47 @@ if uploaded_file and len(models) == 3:
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p
+    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
+    wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
+    wits_norm = 0 if gender == "آقا (Male)" else -1
+    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
+    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
+    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
+    m4.metric("Downs (FMA)", f"{fma}°")
+
+    # --- ۵. گزارش جامع و ذخیره‌سازی افزایشی ---
+    st.divider()
+    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("👄 تحلیل بافت نرم")
+        st.write(f"• لب بالا: {dist_ls} mm | لب پایین: {dist_li} mm")
+        w_diff = wits_mm - wits_norm
+        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
+        st.write(f"• وضعیت فکی: {diag}")
+            
+    with c2:
+        st.subheader("📐 تحلیل رشد")
+        fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
+        st.write(f"• الگوی اسکلتال: {fma_desc}")
+        
+        # --- بخش افزایشی جدید: دانلود دیتا ---
+        df_results = pd.DataFrame({
+            "Landmark": landmark_names,
+            "X_px": [l[i][0] for i in range(29)],
+            "Y_px": [l[i][1] for i in range(29)]
+        })
+        csv = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Analysis (CSV)", data=csv, file_name=f"aariz_report_{uploaded_file.name}.csv", mime='text/csv')
+
+    if st.button("📥 مشاهده گزارش نهایی و پرینت"):
+        report_html = f"""<div style="font-family: Arial; direction: ltr;">
+            <h1 style="text-align: center;">Clinical Report</h1><hr>
+            <p><strong>Diagnosis:</strong> {diag} | <strong>Growth:</strong> {fma_desc}</p>
+            <p><strong>ANB:</strong> {anb} | <strong>Wits:</strong> {round(wits_mm, 2)} mm</p>
+            <hr><button onclick="window.print()">Print PDF</button></div>"""
+        st.components.v1.html(report_html, height=300)
