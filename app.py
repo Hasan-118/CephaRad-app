@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -40,7 +41,11 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -151,7 +156,6 @@ if uploaded_file and len(models) == 3:
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
     
-    # McNamara Incremental Logic
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
@@ -176,7 +180,7 @@ if uploaded_file and len(models) == 3:
     c1, c2 = st.columns(2)
     diag = "Class II" if (wits_mm - wits_norm) > 1.5 else "Class III" if (wits_mm - wits_norm) < -1.5 else "Class I"
     fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-
+    
     with c1:
         st.subheader("👄 تحلیل بافت نرم و زیبایی")
         st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
@@ -197,19 +201,13 @@ if uploaded_file and len(models) == 3:
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
 
-        # --- افزونه خروجی PDF (صرفاً اضافه شده بدون تغییر در کدهای بالا) ---
+        # --- افزونه افزایشی (Incremental) برای PDF ---
         if st.button("📄 دریافت گزارش PDF"):
             pdf_html = f"""
-            <div style="direction:ltr; padding:20px; border:1px solid #ccc; font-family:sans-serif;">
+            <div style="direction:ltr; padding:20px; border:1px solid #ccc; font-family:Arial;">
                 <h2 style="color:#2c3e50;">Aariz Precision Report</h2>
-                <p>Gender: {gender} | Pixel Size: {pixel_size} mm/px</p><hr>
-                <ul>
-                    <li><b>Skeletal Diagnosis:</b> {diag}</li>
-                    <li><b>ANB Angle:</b> {anb}°</li>
-                    <li><b>Wits Appraisal:</b> {round(wits_mm, 2)} mm</li>
-                    <li><b>Growth Pattern:</b> {fma_desc}</li>
-                </ul>
-                <button onclick="window.print()">Print/Save PDF</button>
+                <hr><p>Skeletal Class: {diag}</p><p>ANB: {anb}°</p><p>Wits: {round(wits_mm,2)}mm</p>
+                <button onclick="window.print()">Print PDF</button>
             </div>
             """
-            st.components.v1.html(pdf_html, height=300)
+            st.components.v1.html(pdf_html, height=250)
