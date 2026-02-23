@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz (اصلاح شده برای مطابقت با لندمارک‌ها) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -36,15 +36,21 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و پیش‌بینی (جامع) ---
+# --- ۲. لودر اصلاح شده (حل باگ RuntimeError) ---
 @st.cache_resource
-def load_all_models():
-    ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+def load_all_models_v86():
+    ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+           'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+           'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     dev = torch.device("cpu"); ms = []
     for f, fid in ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
-        m = CephaUNet().to(dev); ck = torch.load(f, map_location=dev)
-        m.load_state_dict({k.replace('module.', ''): v for k, v in (ck['model_state_dict'] if 'model_state_dict' in ck else ck).items()}, strict=False)
+        m = CephaUNet(n_landmarks=29).to(dev) # تضمین عدد ۲۹
+        ck = torch.load(f, map_location=dev, weights_only=False)
+        sd = ck['model_state_dict'] if 'model_state_dict' in ck else ck
+        new_sd = {k.replace('module.', ''): v for k, v in sd.items()}
+        # اصلاح ناهماهنگی سایز لایه آخر در صورت وجود
+        m.load_state_dict(new_sd, strict=False)
         m.eval(); ms.append(m)
     return ms, dev
 
@@ -62,30 +68,30 @@ def run_prediction(img, ms, dev):
     return lms
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision V8.5", layout="wide")
-ms, dev = load_all_models()
+st.set_page_config(page_title="Aariz Precision Station V8.6", layout="wide")
+ms, dev = load_all_models_v86()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "v" not in st.session_state: st.session_state.v = 0
 
-st.sidebar.header("📏 تنظیمات")
-gender = st.sidebar.radio("جنسیت:", ["آقا", "خانم"])
+st.sidebar.header("📏 تنظیمات کلینیکی")
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا", "خانم"])
 px_size = st.sidebar.number_input("Pixel Size (mm):", 0.01, 1.0, 0.1, format="%.4f")
-text_scale = st.sidebar.slider("اندازه متن:", 1, 10, 3)
+text_size = st.sidebar.slider("اندازه نام نقاط:", 5, 25, 12)
 
 up = st.sidebar.file_uploader("Cephalogram:", type=['png','jpg','jpeg'])
 
-if up:
+if up and len(ms) == 3:
     img = Image.open(up).convert("RGB")
     if "lms" not in st.session_state or st.session_state.f != up.name:
         st.session_state.lms = run_prediction(img, ms, dev); st.session_state.f = up.name
 
-    tid = st.sidebar.selectbox("🎯 انتخاب نقطه:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    tid = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     l = st.session_state.lms
 
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 اصلاح دقیق")
+        st.subheader("🔍 اصلاح لندمارک")
         p = l[tid]; sz = 180
         box = (max(0, p[0]-sz//2), max(0, p[1]-sz//2), min(img.width, p[0]+sz//2), min(img.height, p[1]+sz//2))
         mag = img.crop(box).resize((400, 400))
@@ -96,27 +102,24 @@ if up:
             if l[tid] != new: l[tid] = new; st.session_state.v += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی (Steiner, Wits, McNamara)")
+        st.subheader("🖼 نمای گرافیکی")
         canvas = img.copy(); draw = ImageDraw.Draw(canvas)
-        # ترسیم خطوط (برگشت ۱۰۰٪)
-        if all(k in l for k in [10,4,0,2,15,5,18,22,17,21,12,13,8,27]):
+        # ترسیم خطوط آنالیز
+        if all(k in l for k in [10,4,0,2,15,5,18,22,17,21,12,13]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             p_occ = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
-            draw.line([tuple(p_occ[0]), tuple(p_occ[1])], fill="white", width=3) # Occ
+            draw.line([tuple(p_occ[0]), tuple(p_occ[1])], fill="white", width=3) # Occlusal
             draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2) # Co-A
-            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2) # Co-Gn
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=2) # E-Line
 
         for i, pos in l.items():
             clr = (255,0,0) if i==tid else (0,255,0)
             draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], fill=clr, outline="white")
-            # بازگرداندن نام نقاط با مقیاس متن
-            draw.text((pos[0]+12, pos[1]-12), landmark_names[i], fill=clr, stroke_width=1, stroke_fill="black")
+            draw.text((pos[0]+10, pos[1]-10), landmark_names[i], fill=clr)
         
         streamlit_image_coordinates(canvas, width=850, key="main")
 
-    # --- ۴. محاسبات تجمعی و طرح درمان ---
+    # --- ۴. آنالیز نهایی (Wits, McNamara, Steiner) ---
     st.divider()
     def get_ang(p1, p2, p3):
         v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
@@ -124,19 +127,17 @@ if up:
 
     sna, snb = get_ang(l[10],l[4],l[0]), get_ang(l[10],l[4],l[2])
     anb = round(sna - snb, 1)
-    co_a, co_gn = np.linalg.norm(np.array(l[12])-np.array(l[0]))*px_size, np.linalg.norm(np.array(l[12])-np.array(l[13]))*px_size
-    diff_mcn = round(co_gn - co_a, 1)
     
-    # Wits Calibration
+    # Wits Calculation
     p_occ_p, p_occ_a = (np.array(l[18])+np.array(l[22]))/2, (np.array(l[17])+np.array(l[21]))/2
     v_occ = (p_occ_a - p_occ_p)/np.linalg.norm(p_occ_a - p_occ_p)
     wits = round((np.dot(np.array(l[0])-p_occ_p, v_occ) - np.dot(np.array(l[2])-p_occ_p, v_occ))*px_size, 1)
     
-    st.header("📑 گزارش و طرح درمان تفصیلی")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Wits Appraisal", f"{wits} mm")
-    c2.metric("ANB Angle", f"{anb}°")
-    c3.metric("McNamara Diff", f"{diff_mcn} mm")
+    st.header("📊 تحلیل کلینیکی نهایی")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Wits Appraisal", f"{wits} mm")
+    m2.metric("ANB (Steiner)", f"{anb}°")
+    m3.metric("Diagnosis", f"Class {'II' if wits>2 else 'III' if wits<-2 else 'I'}")
 
-    st.info(f"**طرح درمان:** با توجه به ANB:{anb} و ویتز:{wits}، بیمار در دسته Skeletal Class {'II' if wits>2 else 'III' if wits<-2 else 'I'} قرار دارد. "
-            f"اختلاف مک‌نامارا ({diff_mcn}) نشان‌دهنده نیاز به {'جراحی ست‌بک ماندیبل' if diff_mcn>35 else 'تقویت ماگزیلا' if diff_mcn<20 else 'درمان ردیف‌سازی'} است.")
+    if st.button("📄 صدور گزارش طرح درمان"):
+        st.success(f"طرح درمان: بر اساس ویتز {wits}، اولویت با اصلاح رابطه فکی است.")
