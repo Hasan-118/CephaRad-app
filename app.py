@@ -41,7 +41,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ ۳ مدل متخصص) ---
+# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده برای سرعت حداکثری) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -61,31 +61,43 @@ def load_aariz_models():
     return loaded_models, device
 
 def run_precise_prediction(img_pil, models, device):
-    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
+    ow, oh = img_pil.size; img_gray = img_pil.convert('L')
+    ratio = 512 / max(ow, oh)
+    nw, nh = int(ow * ratio), int(oh * ratio)
+    img_rs = img_gray.resize((nw, nh), Image.NEAREST) # افزایش سرعت تغییر سایز
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), 
-                  int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
+    canvas.paste(img_rs, (px, py))
+    input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
+    
+    ANT_IDX = {10, 14, 9, 5, 28, 20}
+    POST_IDX = {7, 11, 12, 15}
+    coords = {}
+
+    with torch.no_grad():
+        for m_idx, m in enumerate(models):
+            out = m(input_tensor)[0].cpu().numpy()
+            for i in range(29):
+                # انتخاب هوشمندانه نقاط بر اساس تخصص مدل برای سرعت و دقت
+                if (m_idx == 1 and i in ANT_IDX) or \
+                   (m_idx == 2 and i in POST_IDX) or \
+                   (m_idx == 0 and i not in ANT_IDX and i not in POST_IDX):
+                    idx_max = np.argmax(out[i])
+                    y, x = divmod(idx_max, 512)
+                    coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+            del out
     gc.collect(); return coords
 
-# --- ۳. تابع تولید PDF حرفه‌ای (افزایشی) ---
+# --- ۳. تولید PDF حرفه‌ای (Multi-Page با Trace) ---
 def create_full_report(data, diag, patient, doctor, gender, draw_img):
     pdf = FPDF()
     pdf.add_page()
-    # Header
     pdf.set_fill_color(0, 80, 158); pdf.rect(0, 0, 210, 40, 'F')
     pdf.set_font("Arial", 'B', 22); pdf.set_text_color(255, 255, 255)
     pdf.cell(190, 20, "AARIZ PRECISION STATION V7.8", ln=1, align='C')
     pdf.ln(20); pdf.set_text_color(0, 0, 0)
-    # Info
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(90, 8, f"Patient: {patient}", 0); pdf.cell(90, 8, f"Date: {datetime.datetime.now().strftime('%Y-%m-%d')}", 0, 1)
-    pdf.cell(90, 8, f"Doctor: {doctor}", 0); pdf.cell(90, 8, f"Gender: {gender}", 0, 1)
-    pdf.ln(5)
-    # Table
+    pdf.cell(90, 8, f"Doctor: {doctor}", 0); pdf.cell(90, 8, f"Gender: {gender}", 0, 1); pdf.ln(5)
     pdf.set_fill_color(240, 240, 240); pdf.set_font("Arial", 'B', 12)
     pdf.cell(120, 10, "Parameter", 1, 0, 'C', True); pdf.cell(70, 10, "Value", 1, 1, 'C', True)
     pdf.set_font("Arial", '', 11)
@@ -93,8 +105,7 @@ def create_full_report(data, diag, patient, doctor, gender, draw_img):
         pdf.cell(120, 9, f" {k}", 1); pdf.cell(70, 9, f" {v}", 1, 1, 'C')
     pdf.ln(5); pdf.set_font("Arial", 'B', 14); pdf.set_fill_color(255, 243, 205)
     pdf.cell(190, 12, f"  Final Diagnosis: {diag}", 1, 1, 'L', True)
-    # Image Page
-    pdf.add_page(); pdf.cell(190, 10, "Cephalometric Trace Analysis", ln=1, align='C')
+    pdf.add_page(); pdf.set_font("Arial", 'B', 14); pdf.cell(190, 10, "Cephalometric Trace Analysis", ln=1, align='C')
     img_buf = io.BytesIO(); draw_img.save(img_buf, format='PNG'); img_buf.seek(0)
     pdf.image(img_buf, x=10, y=30, w=190)
     return pdf.output(dest='S').encode('latin-1')
@@ -106,7 +117,7 @@ landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S'
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 تنظیمات بیمار")
+st.sidebar.header("📏 تنظیمات بالینی")
 patient_name = st.sidebar.text_input("نام بیمار:", "P-100")
 doctor_name = st.sidebar.text_input("نام پزشک:", "Dr. Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
@@ -121,11 +132,11 @@ if uploaded_file and len(models) == 3:
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 لندمارک فعال برای اصلاح:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 Micro-Adjustment")
+        st.subheader("🔍 اصلاح دقیق (Zoom)")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
@@ -133,20 +144,19 @@ if uploaded_file and len(models) == 3:
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            scale_mag = size_m / 400
+            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 ترسیمات (Cephalometric Trace)")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27, 12, 13]):
+        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=2) # E-Line
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=2)   # E-Line
         
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -164,7 +174,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۵. تحلیل نهایی و خروجی PDF ---
+    # --- ۵. تحلیل نهایی و خروجی گزارش ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -177,10 +187,7 @@ if uploaded_file and len(models) == 3:
     diff_mcnamara = round(co_gn - co_a, 2)
     diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
 
-    st.header(f"📑 گزارش بالینی نهایی")
-    if st.button("📄 تولید و دانلود گزارش PDF حرفه‌ای (Multi-Page)"):
-        results = {"SNA Angle": f"{sna}°", "SNB Angle": f"{snb}°", "ANB Angle": f"{anb}°", "FMA": f"{fma}°", "McNamara Diff": f"{diff_mcnamara} mm"}
-        pdf_bytes = create_full_report(results, diag, patient_name, doctor_name, gender, draw_img)
-        st.download_button(label="📥 ذخیره فایل PDF", data=pdf_bytes, file_name=f"Aariz_Report_{patient_name}.pdf", mime="application/pdf")
-    
-    st.info(f"تشخیص اسکلتال بر اساس ANB: **{diag}**")
+    if st.button("📄 دریافت گزارش نهایی PDF (دو صفحه)"):
+        res_data = {"SNA": f"{sna}°", "SNB": f"{snb}°", "ANB": f"{anb}°", "FMA": f"{fma}°", "McNamara Diff": f"{diff_mcnamara} mm"}
+        pdf_bytes = create_full_report(res_data, diag, patient_name, doctor_name, gender, draw_img)
+        st.download_button(label="📥 ذخیره فایل PDF در موبایل/سیستم", data=pdf_bytes, file_name=f"Report_{patient_name}.pdf", mime="application/pdf")
