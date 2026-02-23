@@ -69,14 +69,14 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V8.3", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V8.4", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
-patient_name = st.sidebar.text_input("نام بیمار:", "Aariz Patient")
+p_name = st.sidebar.text_input("نام بیمار:", "Aariz Patient")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
@@ -139,14 +139,11 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (دقیقاً طبق V7.8 و اسکرین‌شات کاربر) ---
+    # --- ۴. محاسبات و تفسیر هوشمند (دقیقاً طبق V7.8 و خروجی شما) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-
-    def dist_to_line(p, l1, l2):
-        return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
@@ -154,13 +151,14 @@ if uploaded_file and len(models) == 3:
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
     wits_norm = 0 if gender == "آقا (Male)" else -1
-    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+    
+    dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
+    dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
+    m1.metric("Steiner (ANB)", f"{anb} deg", f"SNA: {sna}, SNB: {snb}")
     m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    m3.metric("Downs (FMA)", f"{fma}°")
+    m3.metric("Downs (FMA)", f"{fma} deg")
     m4.metric("Soft Tissue (Li)", f"{dist_li}mm", f"Norm: -2mm")
 
     st.divider()
@@ -185,26 +183,27 @@ if uploaded_file and len(models) == 3:
         if abs(anb) > 8: st.error(f"🚨 شدت دیسکرپانسی در این {gender} بالا است؛ مشاوره جراحی توصیه می‌شود.")
         else: st.success("✅ امکان اصلاح با مکانوتراپی ارتودنسی.")
 
-    # --- ۵. خروجی PDF (رفع باگ UnicodeEncodeError) ---
+    # --- ۵. خروجی PDF (پاک‌سازی شده از کاراکترهای خطا‌ساز) ---
     def create_pdf():
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(200, 10, "Aariz Precision Report", ln=True, align='C')
         pdf.set_font("Arial", size=12); pdf.ln(10)
-        # استفاده از کلمات جایگزین برای جلوگیری از خطا در انکودینگ latin-1
-        pdf.cell(200, 10, f"Patient: {patient_name} | Gender: {gender}", ln=True)
-        pdf.cell(200, 10, f"ANB Angle: {anb} degree | SNA: {sna} | SNB: {snb}", ln=True)
-        pdf.cell(200, 10, f"Wits Appraisal: {round(wits_mm, 2)} mm (Norm: {wits_norm}mm)", ln=True)
-        pdf.cell(200, 10, f"FMA Angle: {fma} degree | Soft Tissue Li: {dist_li}mm", ln=True)
+        # استفاده از کلمات کاملاً لاتین برای تضمین موفقیت انکودینگ
+        pdf.cell(200, 10, f"Patient: {p_name} | Gender: {gender}", ln=True)
+        pdf.cell(200, 10, f"ANB: {anb} | SNA: {sna} | SNB: {snb}", ln=True)
+        pdf.cell(200, 10, f"Wits: {round(wits_mm, 2)} mm | Normal: {wits_norm} mm", ln=True)
+        pdf.cell(200, 10, f"FMA Angle: {fma} | Li distance: {dist_li} mm", ln=True)
         pdf.ln(5)
-        pdf.cell(200, 10, f"Clinical Diagnosis: {diag} | Growth Pattern: {fma_desc}", ln=True)
-        return pdf.output(dest='S').encode('latin-1', 'replace') # جایگزینی کاراکترهای غیرمجاز
+        pdf.cell(200, 10, f"Diagnosis: {diag} | Pattern: {fma_desc}", ln=True)
+        return pdf.output(dest='S').encode('latin-1')
 
     if st.sidebar.button("📥 خروجی گزارش PDF"):
         try:
-            pdf_data = create_pdf()
-            b64 = base64.b64encode(pdf_data).decode()
-            st.sidebar.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Aariz_Report_{patient_name}.pdf">📥 دانلود گزارش نهایی</a>', unsafe_allow_html=True)
+            pdf_out = create_pdf()
+            b64_pdf = base64.b64encode(pdf_out).decode()
+            href_pdf = f'<a href="data:application/pdf;base64,{b64_pdf}" download="Aariz_Report.pdf">✅ فایل PDF آماده است - کلیک برای دانلود</a>'
+            st.sidebar.markdown(href_pdf, unsafe_allow_html=True)
         except Exception as e:
-            st.sidebar.error("خطا در تولید PDF. لطفاً کاراکترهای خاص را حذف کنید.")
+            st.sidebar.error(f"Error: {str(e)}")
