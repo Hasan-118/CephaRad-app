@@ -1,10 +1,11 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
 import os
 import gdown
-import pandas as pd  # برای خروجی CSV اضافه شد
+import pandas as pd
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -38,10 +39,14 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
-@st.cache_resource
+# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده برای سرعت) ---
+@st.cache_resource(ttl=3600)
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -98,7 +103,7 @@ if uploaded_file and len(models) == 3:
         st.subheader("🔍 Micro-Adjustment")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.Resampling.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
@@ -111,28 +116,23 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع) ---
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2)
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = landmark_names[i]
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+            draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -140,7 +140,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
+    # --- ۴. محاسبات و تفسیر هوشمند ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -151,16 +151,12 @@ if uploaded_file and len(models) == 3:
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
-    
-    # McNamara Incremental Logic
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
-
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
     wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-    
     wits_norm = 0 if gender == "آقا (Male)" else -1
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
@@ -168,50 +164,49 @@ if uploaded_file and len(models) == 3:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
     m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
+    m3.metric("McNamara Diff", f"{diff_mcnamara} mm")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع شما) ---
+    # --- ۵. گزارش جامع و خروجی PDF ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
+    w_diff = wits_mm - wits_norm
+    diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
+    fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
+    
     with c1:
-        st.subheader("👄 تحلیل بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
-        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
-
-        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
-        w_diff = wits_mm - wits_norm
-        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
+        st.subheader("👄 تحلیل بافت نرم")
+        st.write(f"• لب بالا: {dist_ls} mm | لب پایین: {dist_li} mm")
         st.write(f"• **وضعیت فکی:** {diag}")
-        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
-            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
-        else:
-            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
             
     with c2:
-        st.subheader("📐 تحلیل زوایا و رشد")
-        fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
+        st.subheader("📐 تحلیل رشد و خروجی")
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
-        st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
-        st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+        
+        df = pd.DataFrame({"Landmark": landmark_names, "X": [l[i][0] for i in range(29)], "Y": [l[i][1] for i in range(29)]})
+        st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), f"aariz_{uploaded_file.name}.csv", "text/csv")
 
-        # --- بخش افزایشی جدید: دانلود دیتا در انتهای ستون دوم ---
-        st.subheader("📥 خروجی داده‌ها")
-        results_data = {
-            "Landmark": landmark_names,
-            "X_pixel": [l[i][0] for i in range(29)],
-            "Y_pixel": [l[i][1] for i in range(29)],
-            "Clinical_Note": [diag if i==0 else (fma_desc if i==4 else "") for i in range(29)]
-        }
-        df = pd.DataFrame(results_data)
-        csv_file = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Analysis (CSV)",
-            data=csv_file,
-            file_name=f"aariz_analysis_{uploaded_file.name}.csv",
-            mime="text/csv",
-            help="ذخیره مختصات لندمارک‌ها و نتایج آنالیز در فایل اکسل"
-        )
+        if st.button("📄 Generate PDF Report"):
+            report_html = f"""
+            <div id="pdf-report" style="padding:30px; border:2px solid #333; font-family:Arial; direction:ltr;">
+                <h1 style="color:#2E86C1; text-align:center;">Aariz Precision Analysis Report</h1>
+                <hr>
+                <p><strong>Patient Gender:</strong> {gender}</p>
+                <p><strong>Skeletal Diagnosis:</strong> {diag}</p>
+                <p><strong>Growth Pattern:</strong> {fma_desc}</p>
+                <table style="width:100%; border-collapse: collapse; margin-top:20px;">
+                    <tr style="background-color: #f2f2f2;">
+                        <th style="border:1px solid #ddd; padding:8px;">Metric</th>
+                        <th style="border:1px solid #ddd; padding:8px;">Value</th>
+                    </tr>
+                    <tr><td style="border:1px solid #ddd; padding:8px;">ANB Angle</td><td style="border:1px solid #ddd; padding:8px;">{anb}°</td></tr>
+                    <tr><td style="border:1px solid #ddd; padding:8px;">Wits Appraisal</td><td style="border:1px solid #ddd; padding:8px;">{round(wits_mm, 2)} mm</td></tr>
+                    <tr><td style="border:1px solid #ddd; padding:8px;">McNamara Diff</td><td style="border:1px solid #ddd; padding:8px;">{diff_mcnamara} mm</td></tr>
+                    <tr><td style="border:1px solid #ddd; padding:8px;">FMA Angle</td><td style="border:1px solid #ddd; padding:8px;">{fma}°</td></tr>
+                </table>
+                <br>
+                <button onclick="window.print()" style="background:#28A745; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">Click to Save as PDF</button>
+            </div>
+            """
+            st.components.v1.html(report_html, height=500)
