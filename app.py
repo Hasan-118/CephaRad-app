@@ -41,11 +41,7 @@ class CephaUNet(nn.Module):
 # --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -56,12 +52,6 @@ def load_aariz_models():
             m.eval(); loaded_models.append(m)
         except: pass
     return loaded_models, device
-
-# کش کردن دیتای پیش‌بینی برای جلوگیری از لگ در رابط کاربری
-@st.cache_data(show_spinner=False)
-def get_cached_prediction(img_bytes, _models, _device):
-    img_pil = Image.open(img_bytes).convert("RGB")
-    return run_precise_prediction(img_pil, _models, _device)
 
 def run_precise_prediction(img_pil, models, device):
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
@@ -78,7 +68,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V11.9", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -94,8 +84,7 @@ uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتر
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        # فراخوانی نسخه کش شده برای جلوگیری از اجرای تکراری مدل
-        st.session_state.initial_lms = get_cached_prediction(uploaded_file, models, device)
+        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
         st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
