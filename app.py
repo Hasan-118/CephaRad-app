@@ -2,13 +2,12 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
-import os
-import gdown
+import os, gdown, gc, json
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مدل (Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,162 +36,136 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
+# --- ۲. لودر هوشمند مدل‌ها ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
-    device = torch.device("cpu"); loaded_models = []
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    dev = torch.device("cpu"); ms = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
-        try:
-            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-            m.eval(); loaded_models.append(m)
-        except: pass
-    return loaded_models, device
+        m = CephaUNet(n_landmarks=29).to(dev)
+        ckpt = torch.load(f, map_location=dev, weights_only=False)
+        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+        m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+        m.eval(); ms.append(m)
+    gc.collect(); return ms, dev
 
-def run_precise_prediction(img_pil, models, device):
-    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {}
-    for i in range(29):
-        hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
-        y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-    return coords
+def predict_fast(img_pil, ms, dev):
+    W, H = img_pil.size; ratio = 512 / max(W, H)
+    img_rs = img_pil.convert('L').resize((int(W*ratio), int(H*ratio)), Image.NEAREST)
+    canvas = Image.new("L", (512, 512)); px, py = (512-img_rs.width)//2, (512-img_rs.height)//2
+    canvas.paste(img_rs, (px, py)); tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(dev)
+    ANT_IDX, POST_IDX = {10, 14, 9, 5, 28, 20}, {7, 11, 12, 15}
+    res = {}
+    with torch.no_grad():
+        outs = [m(tensor)[0].cpu().numpy() for m in ms]
+        for i in range(29):
+            m_idx = 1 if i in ANT_IDX else (2 if i in POST_IDX else 0)
+            y, x = divmod(np.argmax(outs[m_idx][i]), 512)
+            res[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+    return res
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
-models, device = load_aariz_models()
-landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
-
-if "click_version" not in st.session_state: st.session_state.click_version = 0
-if "last_target" not in st.session_state: st.session_state.last_target = 0
-
-st.sidebar.header("📏 تنظیمات بیمار")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
-
-if uploaded_file and len(models) == 3:
-    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
-    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
-
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    if st.sidebar.button("🔄 Reset Current Point"):
-        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
-        st.session_state.click_version += 1; st.rerun()
-
-    col1, col2 = st.columns([1.2, 2.5])
-    with col1:
-        st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 180 
-        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
-
-    with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
-        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
+# --- ۳. توابع محاسباتی اصلاح شده (Fix Errors) ---
+def get_ang(p1, p2, p3, p4=None):
+    """محاسبه زاویه: اگر ۴ نقطه داده شود زاویه بین دو خط، در غیر این صورت زاویه بین ۳ نقطه با راس p2"""
+    try:
+        if p4 is None: # زاویه بین ۳ نقطه (مثلاً SNA) - راس p2
+            v1 = np.array(p1) - np.array(p2)
+            v2 = np.array(p3) - np.array(p2)
+        else: # زاویه بین دو خط مستقل (مثلاً FH vs MP)
+            v1 = np.array(p2) - np.array(p1)
+            v2 = np.array(p4) - np.array(p3)
         
-        # --- خطوط آنالیز (حفظ ۱۰۰٪ مرجع) ---
-        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
-            p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+        norm = (np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-7
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / norm, -1, 1))), 2)
+    except: return 0.0
 
-        for i, pos in l.items():
-            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 10 if i == target_idx else 6
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = landmark_names[i]
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+def dist_to_line(p, l1, l2):
+    """رفع هشدار NumPy 2.0 برای ضرب خارجی ۲ بعدی"""
+    p, l1, l2 = np.array(p), np.array(l1), np.array(l2)
+    # استفاده از فرمول قدر مطلق برای بردار ۲ بعدی جهت رفع DeprecationWarning
+    return np.abs((l2[0]-l1[0])*(l1[1]-p[1]) - (l1[0]-p[0])*(l2[1]-l1[1])) / (np.linalg.norm(l2-l1) + 1e-6)
 
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
+# --- ۴. رابط کاربری و نمایش ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.2", layout="wide")
+landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
+models, device = load_aariz_models()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
-    st.divider()
-    def get_ang(p1, p2, p3, p4=None):
-        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+st.sidebar.title("📏 تنظیمات کلینیکی")
+gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
+pixel_size = st.sidebar.number_input("Pixel Size (mm):", 0.001, 1.0, 0.1, format="%.4f")
+analysis_mode = st.sidebar.selectbox("📊 نمایش آنالیز:", 
+    ["فقط لندمارک‌ها", "Steiner (SNA/SNB)", "McNamara & FH", "Soft Tissue (E-Line)", "نمایش جامع"])
+target_idx = st.sidebar.selectbox("🎯 لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-    def dist_to_line(p, l1, l2):
-        return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر", type=['png', 'jpg', 'jpeg'])
 
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
-    fma = get_ang(l[15], l[5], l[14], l[3])
-    
-    # McNamara Incremental Logic
-    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
-    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
-    diff_mcnamara = round(co_gn - co_a, 2)
+if uploaded_file:
+    if "lms" not in st.session_state or st.session_state.file_id != uploaded_file.name:
+        img = Image.open(uploaded_file).convert("RGB")
+        st.session_state.img = img
+        st.session_state.lms = predict_fast(img, models, device)
+        st.session_state.file_id = uploaded_file.name
+        st.session_state.v = 0
 
-    p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-    wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-    
-    wits_norm = 0 if gender == "آقا (Male)" else -1
-    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+    l = st.session_state.lms
+    img = st.session_state.img; W, H = img.size
+    c1, c2 = st.columns([1.2, 2.8])
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
-    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
-    m4.metric("Downs (FMA)", f"{fma}°")
-
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع شما) ---
-    st.divider()
-    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
-    c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 تحلیل بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
-        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
+        st.subheader("🔍 مگنیفایر")
+        cur = l[target_idx]; box = 100
+        left, top = max(0, cur[0]-box), max(0, cur[1]-box)
+        crop = img.crop((left, top, min(W, cur[0]+box), min(H, cur[1]+box))).resize((400, 400), Image.NEAREST)
+        draw_m = ImageDraw.Draw(crop)
+        draw_m.line((195, 200, 205, 200), fill="red", width=2); draw_m.line((200, 195, 200, 205), fill="red", width=2)
+        res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
+        if res_m:
+            new_c = [int(left + (res_m['x'] * (2*box/400))), int(top + (res_m['y'] * (2*box/400)))]
+            if new_c != l[target_idx]:
+                l[target_idx] = new_c; st.session_state.v += 1; st.rerun()
 
-        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
-        w_diff = wits_mm - wits_norm
-        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• **وضعیت فکی:** {diag}")
-        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
-            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
-        else:
-            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
-            
     with c2:
-        st.subheader("📐 تحلیل زوایا و رشد")
-        fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی اسکلتال: **{fma_desc}**")
-        st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
-        st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+        st.subheader("🖼 ترسیمات آنالیز")
+        sc = 850 / W; disp = img.resize((850, int(H*sc)), Image.NEAREST)
+        draw = ImageDraw.Draw(disp)
+        def sp(idx): return (l[idx][0]*sc, l[idx][1]*sc)
+
+        # ترسیم خطوط بر اساس مود انتخابی
+        if analysis_mode != "فقط لندمارک‌ها":
+            if "Steiner" in analysis_mode or "جامع" in analysis_mode:
+                if all(k in l for k in [10, 4, 0, 2]):
+                    draw.line([sp(10), sp(4)], fill="yellow", width=2)
+                    draw.line([sp(4), sp(0)], fill="cyan", width=1)
+                    draw.line([sp(4), sp(2)], fill="magenta", width=1)
+            if "McNamara" in analysis_mode or "جامع" in analysis_mode:
+                if all(k in l for k in [15, 5, 14, 3]):
+                    draw.line([sp(15), sp(5)], fill="orange", width=2)
+                    draw.line([sp(14), sp(3)], fill="purple", width=2)
+
+        for i, p in l.items():
+            clr = (255,0,0) if i == target_idx else (0,255,0)
+            draw.ellipse([p[0]*sc-4, p[1]*sc-4, p[0]*sc+4, p[1]*sc+4], fill=clr)
+            draw.text((p[0]*sc+5, p[1]*sc-5), landmark_names[i], fill=clr)
+
+        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
+        if res_main:
+            l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
+            st.session_state.v += 1; st.rerun()
+
+    # --- ۵. گزارش نهایی (بدون خطا) ---
+    with st.expander("📊 مشاهده گزارش تحلیلی"):
+        sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
+        anb = round(sna - snb, 2)
+        fma = get_ang(l[15], l[5], l[14], l[3]) # ارسال ۴ نقطه بدون خطا
+        co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
+        co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}°")
+        m2.metric("McNamara Diff", f"{round(co_gn-co_a, 1)} mm")
+        m3.metric("FMA Angle", f"{fma}°")
