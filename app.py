@@ -5,7 +5,6 @@ import torch.nn as nn
 import numpy as np
 import os
 import gdown
-import pandas as pd
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -69,7 +68,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.6", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.5", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -108,26 +107,26 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # --- خطوط آنالیز مرجع ---
+        # ترسیم تمام خطوط آنالیز مرجع (بدون تغییر در منطق)
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3)
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2)
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2)
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
         if all(k in l for k in [4, 15, 5, 12, 0, 13]):
             v_fh = np.array(l[5]) - np.array(l[15])
             v_perp = np.array([-v_fh[1], v_fh[0]])
             v_perp = v_perp / (np.linalg.norm(v_perp) + 1e-6) * 450
             draw.line([tuple(l[4]), tuple(np.array(l[4]) + v_perp)], fill="#39FF14", width=2)
-            draw.line([tuple(l[12]), tuple(l[0])], fill="#00FFFF", width=4)
-            draw.line([tuple(l[12]), tuple(l[13])], fill="#FF00FF", width=4)
+            draw.line([tuple(l[12]), tuple(l[0])], fill="#00FFFF", width=4) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="#FF00FF", width=4) # Co-Gn
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -164,35 +163,43 @@ if uploaded_file and len(models) == 3:
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع و ذخیره‌سازی افزایشی ---
+    # --- ۵. گزارش جامع و طرح درمان (حفظ ۱۰۰٪ مرجع) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 تحلیل بافت نرم")
-        st.write(f"• لب بالا: {dist_ls} mm | لب پایین: {dist_li} mm")
+        st.subheader("👄 تحلیل بافت نرم و زیبایی")
+        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
+        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
+        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
+        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
+
+        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• وضعیت فکی: {diag}")
+        st.write(f"• **وضعیت فکی:** {diag}")
+        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
+            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
+        else:
+            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
             
     with c2:
-        st.subheader("📐 تحلیل رشد")
+        st.subheader("📐 تحلیل زوایا و رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی اسکلتال: {fma_desc}")
-        
-        # --- بخش افزایشی جدید: دانلود دیتا ---
-        df_results = pd.DataFrame({
-            "Landmark": landmark_names,
-            "X_px": [l[i][0] for i in range(29)],
-            "Y_px": [l[i][1] for i in range(29)]
-        })
-        csv = df_results.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Analysis (CSV)", data=csv, file_name=f"aariz_report_{uploaded_file.name}.csv", mime='text/csv')
+        st.write(f"• الگوی اسکلتال: **{fma_desc}**")
+        st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
+        st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
 
     if st.button("📥 مشاهده گزارش نهایی و پرینت"):
-        report_html = f"""<div style="font-family: Arial; direction: ltr;">
-            <h1 style="text-align: center;">Clinical Report</h1><hr>
+        report_html = f"""
+        <div style="font-family: Arial; padding: 20px; border: 3px solid black; direction: ltr;">
+            <h1 style="text-align: center;">Clinical Analysis Report</h1>
+            <hr>
             <p><strong>Diagnosis:</strong> {diag} | <strong>Growth:</strong> {fma_desc}</p>
             <p><strong>ANB:</strong> {anb} | <strong>Wits:</strong> {round(wits_mm, 2)} mm</p>
-            <hr><button onclick="window.print()">Print PDF</button></div>"""
-        st.components.v1.html(report_html, height=300)
+            <p><strong>McNamara:</strong> {diff_mcnamara} mm</p>
+            <hr>
+            <button onclick="window.print()" style="padding: 10px; background: green; color: white;">Print to PDF</button>
+        </div>
+        """
+        st.components.v1.html(report_html, height=400)
