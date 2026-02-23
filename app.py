@@ -67,7 +67,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V11.0", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -123,6 +123,17 @@ if uploaded_file and len(models) == 3:
             draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
             draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
+        # --- بخش افزایشی: گراف مک‌نامارا (فقط اضافه شد) ---
+        if all(k in l for k in [4, 15, 5, 12, 0, 13]):
+            # ترسیم N-Perpendicular
+            v_fh = np.array(l[5]) - np.array(l[15])
+            v_perp = np.array([-v_fh[1], v_fh[0]])
+            v_perp = v_perp / (np.linalg.norm(v_perp) + 1e-6) * 450
+            draw.line([tuple(l[4]), tuple(np.array(l[4]) + v_perp)], fill="#39FF14", width=2)
+            # ترسیم خطوط Co-A و Co-Gn
+            draw.line([tuple(l[12]), tuple(l[0])], fill="#00FFFF", width=4) # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="#FF00FF", width=4) # Co-Gn
+
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
@@ -139,7 +150,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
+    # --- ۴. محاسبات و تفسیر هوشمند (حفظ ۱۰۰٪ مرجع) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -151,7 +162,6 @@ if uploaded_file and len(models) == 3:
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
     
-    # McNamara Incremental Logic
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
@@ -170,7 +180,7 @@ if uploaded_file and len(models) == 3:
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع شما) ---
+    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع) ---
     st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
