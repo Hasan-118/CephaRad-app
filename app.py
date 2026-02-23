@@ -69,7 +69,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V8.9", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V9.0", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -112,16 +112,16 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) 
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) 
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) 
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) 
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) 
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) 
-            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) 
-            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) 
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) 
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -144,12 +144,12 @@ if uploaded_file and len(models) == 3:
     fma = get_ang(l[15], l[5], l[14], l[3])
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-    wits_mm = abs((np.dot(np.array(l[0]) - p_occ_a, v_occ) - np.dot(np.array(l[2]) - p_occ_a, v_occ)) * pixel_size)
+    wits_mm = abs((np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size)
     wits_norm = 0 if gender == "آقا (Male)" else -1
     dist_li = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[24])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
     dist_ls = round(np.cross(np.array(l[27])-np.array(l[8]), np.array(l[8])-np.array(l[25])) / (np.linalg.norm(np.array(l[27])-np.array(l[8]))+1e-6) * pixel_size, 2)
 
-    # نمایش Metricها (اصلاح شده برای جلوگیری از خطای DeltaGenerator)
+    # رفع تداخل نام متغیرها با ستون‌های استریم‌لیت
     m1_col, m2_col, m3_col, m4_col = st.columns(4)
     m1_col.metric("Steiner (ANB)", f"{anb} deg", f"SNA: {sna}, SNB: {snb}")
     m2_col.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
@@ -165,19 +165,20 @@ if uploaded_file and len(models) == 3:
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
         st.info(f"💡 وضعیت فکی: {diag}")
+
     with c2:
         st.subheader("📐 الگوی رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
         st.write(f"• الگو: **{fma_desc}**")
         st.success("✅ گزارش نهایی آماده بهره‌برداری است.")
 
-    # --- ۵. خروجی PDF (پاک‌سازی نهایی برای رفع باگ انکودینگ) ---
+    # --- ۵. خروجی PDF (پاک‌سازی نهایی) ---
     def create_safe_pdf():
         pdf = FPDF()
-        pdf.add_page(); pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, "Aariz Precision Station Report", ln=True, align='C')
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16); pdf.cell(200, 10, "Aariz Precision Station Report", ln=True, align='C')
         pdf.set_font("Arial", size=12); pdf.ln(10)
-        lines = [f"Patient: {p_name}", f"Gender: {gender}", f"ANB: {anb} | Wits: {round(wits_mm, 2)}mm", f"Diagnosis: {diag}"]
+        lines = [f"Patient: {p_name}", f"Gender: {gender}", f"ANB: {anb} | Wits: {round(wits_mm, 2)}mm", f"FMA: {fma} | Diagnosis: {diag}"]
         for line in lines:
             safe_line = line.encode('cp1252', 'ignore').decode('cp1252')
             pdf.cell(200, 10, safe_line, ln=True)
