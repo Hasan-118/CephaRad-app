@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Aariz Precision Station V11.7
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -9,9 +8,8 @@ import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-import base64
 
-# --- 1. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -40,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- 2. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -69,8 +67,8 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- 3. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V11.7", layout="wide")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V11.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -79,7 +77,7 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 st.sidebar.header("Patient Settings")
 gender = st.sidebar.radio("Gender:", ["Male", "Female"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("Text Scale:", 1, 10, 3)
+text_scale = st.sidebar.slider("Label Scale:", 1, 10, 3)
 
 uploaded_file = st.sidebar.file_uploader("Upload Cephalogram:", type=['png', 'jpg', 'jpeg'])
 
@@ -106,16 +104,20 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("Analysis View")
+        st.subheader("Analysis Canvas")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم خطوط طبق استاندارد مرجع
-        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27]):
+        # --- خطوط آنالیز مرجع ---
+        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
             draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2) # N-A
             draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # N-B
+            p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
+            draw.line([tuple(p_occ_p), tuple(p_occ_a)], fill="white", width=3) # Occ
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
             draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3) # Mandibular
+            draw.line([tuple(l[20]), tuple(l[21])], fill="blue", width=2) # U1
+            draw.line([tuple(l[23]), tuple(l[17])], fill="green", width=2) # L1
             draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
         for i, pos in l.items():
@@ -124,9 +126,13 @@ if uploaded_file and len(models) == 3:
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
             draw.text((pos[0]+12, pos[1]-12), landmark_names[i], fill=color)
 
-        st.image(draw_img, use_container_width=True)
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
+        if res_main:
+            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- 4. محاسبات (حفظ 100% مرجع) ---
+    # --- ۴. محاسبات (حفظ ۱۰۰٪ مرجع) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -138,22 +144,27 @@ if uploaded_file and len(models) == 3:
     co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("ANB Angle", f"{anb} deg")
-    m2.metric("McNamara Diff", f"{diff_mcnamara} mm")
-    m3.metric("FMA Angle", f"{fma} deg")
+    # --- ۵. گزارش و بخش افزایشی چاپ ---
+    st.header("Diagnostic Summary")
+    st.write(f"SNA: {sna} | SNB: {snb} | ANB: {anb}")
+    st.write(f"McNamara Diff: {diff_mcnamara} mm | FMA: {fma}")
 
-    # --- 5. گزارش و خروجی نهایی ---
-    st.divider()
-    if st.button("Generate Final Report"):
-        html_rep = f"""
-        <div style="font-family: sans-serif; border: 1px solid #ccc; padding: 20px;">
-            <h2>Aariz Clinical Report</h2>
-            <p>Gender: {gender}</p>
-            <p>ANB: {anb} (SNA: {sna}, SNB: {snb})</p>
-            <p>McNamara Diff: {diff_mcnamara} mm</p>
-            <p>FMA: {fma} deg</p>
-            <button onclick="window.print()">Print/Save PDF</button>
+    if st.button("Final Clinical Report (Print Ready)"):
+        report_html = f"""
+        <div id="print-area" style="font-family: Arial; padding: 25px; border: 2px solid black;">
+            <h1 style="text-align:center; color: #1e88e5;">AARIZ PRECISION STATION</h1>
+            <hr>
+            <h3>Patient Analysis: {gender}</h3>
+            <table style="width:100%; border-collapse: collapse;">
+                <tr style="background-color: #f2f2f2;"><td>Metric</td><td>Value</td></tr>
+                <tr><td>SNA / SNB / ANB</td><td>{sna} / {snb} / {anb}</td></tr>
+                <tr><td>Wits Appraisal</td><td>{diff_mcnamara} mm (Diff)</td></tr>
+                <tr><td>Skeletal Pattern</td><td>{fma} (FMA)</td></tr>
+            </table>
+            <br>
+            <button onclick="window.print()" style="padding:10px 20px; background:#4CAF50; color:white; border:none; cursor:pointer;">
+                Download as PDF / Print
+            </button>
         </div>
         """
-        st.components.v1.html(html_rep, height=300)
+        st.components.v1.html(report_html, height=500)
