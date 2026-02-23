@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل با اصلاح باگ لود) ---
+# --- ۲. لودر و توابع پیش‌بینی (نسخه اصلاح شده در دل بدنه مرجع) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -45,16 +45,18 @@ def load_aariz_models():
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
-            # اصلاح برای سازگاری با ورژن‌های جدید تورچ و رفع RuntimeError
+            # وصله امنیتی برای حل RuntimeError: تشخیص خودکار تعداد خروجی مدل
             ckpt = torch.load(f, map_location=device, weights_only=False)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             new_state = {k.replace('module.', ''): v for k, v in state.items()}
-            # تشخیص هوشمند تعداد کانال خروجی فایل شما
-            n_lms = new_state['outc.weight'].shape[0]
-            m = CephaUNet(n_landmarks=n_lms).to(device)
+            
+            # خواندن تعداد لندمارک‌های واقعی از لایه outc
+            n_lms_actual = new_state['outc.weight'].shape[0]
+            m = CephaUNet(n_landmarks=n_lms_actual).to(device)
             m.load_state_dict(new_state, strict=False)
             m.eval(); loaded_models.append(m)
-        except: pass
+        except Exception as e:
+            st.error(f"خطا در بارگذاری مدل {f}: {e}")
     return loaded_models, device
 
 def run_precise_prediction(img_pil, models, device):
@@ -67,19 +69,20 @@ def run_precise_prediction(img_pil, models, device):
     coords = {}
     for i in range(29):
         m_idx = 1 if i in ANT_IDX else (2 if i in POST_IDX else 0)
-        # هندل کردن اندیس در صورتی که مدل تخصصی تعداد کمتری خروجی داشته باشد
-        out_i = i if i < outs[m_idx].shape[0] else 0
-        hm = outs[m_idx][out_i]
+        # مدیریت اندیس برای مدل‌هایی که خروجی کمتری دارند
+        hm_idx = i if i < outs[m_idx].shape[0] else 0
+        hm = outs[m_idx][hm_idx]
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) - بازگشت کامل به V7.8 ---
-st.set_page_config(page_title="Aariz Precision Station V8.9.2", layout="wide")
+# --- ۳. رابط کاربری (UI) - کپی ۱۰۰٪ از V7.8 ---
+st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
+if "last_target" not in st.session_state: st.session_state.last_target = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
@@ -134,7 +137,6 @@ if uploaded_file and len(models) == 3:
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            # سیستم نمایش متن مرجع
             name_text = landmark_names[i]
             temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
             ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
@@ -147,7 +149,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و تفسیر هوشمند ---
+    # --- ۴. محاسبات و تفسیر هوشمند (حفظ مرجع + McNamara) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -168,19 +170,33 @@ if uploaded_file and len(models) == 3:
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
-    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع) ---
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
+    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
+    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
+    m4.metric("Downs (FMA)", f"{fma}°")
+
+    # --- ۵. گزارش جامع (حفظ ۱۰۰٪ مرجع شما) ---
+    st.divider()
     st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("👄 تحلیل بافت نرم و زیبایی")
         st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
         st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        st.subheader("💡 نقشه راه درمان")
+        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
+        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
+        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
         st.write(f"• **وضعیت فکی:** {diag}")
+        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
+            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
+        else:
+            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
     with c2:
         st.subheader("📐 تحلیل زوایا و رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
-        st.write(f"• (Co-A): {round(co_a, 1)} mm | (Co-Gn): {round(co_gn, 1)} mm")
+        st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
+        st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
