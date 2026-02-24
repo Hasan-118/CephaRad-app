@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -66,41 +66,53 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) ---
+# --- ۳. رابط کاربری (UI) با کش تصویر برای سرعت بالا ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 تنظیمات نمایش")
+st.sidebar.header("📏 تنظیمات")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
-    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
-    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
+    # جلوگیری از پردازش مجدد تصویر در هر کلیک
+    if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
+        raw_img = Image.open(uploaded_file).convert("RGB")
+        st.session_state.raw_img = raw_img
+        st.session_state.W, st.session_state.H = raw_img.size
         st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
+        st.session_state.lms = st.session_state.initial_lms.copy()
+        st.session_state.file_id = uploaded_file.name
 
+    raw_img = st.session_state.raw_img
+    W, H = st.session_state.W, st.session_state.H
+    
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    if st.sidebar.button("🔄 Reset Current Point"):
+    
+    if st.sidebar.button("🔄 Reset Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
 
     col1, col2 = st.columns([1.2, 2.5])
+    
     with col1:
-        st.subheader("🔍 Micro-Adjustment")
+        st.subheader("🔍 Magnifier")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.NEAREST)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            scale_mag = size_m / 400
+            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
+                st.session_state.lms[target_idx] = new_c
+                st.session_state.click_version += 1; st.rerun()
 
     with col2:
         st.subheader("🖼 نمای گرافیکی")
@@ -110,17 +122,14 @@ if uploaded_file and len(models) == 3:
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = landmark_names[i]
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+            name_text = f"{i}"
+            # نمایش بهینه متن
+            draw.text((pos[0]+r+5, pos[1]-r), name_text, fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
-            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            c_scale = W / 850
+            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
             if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
-
-    if st.sidebar.button("💾 ذخیره مختصات"):
-        st.sidebar.write("مختصات لندمارک‌ها آماده است.")
+                st.session_state.lms[target_idx] = m_c
+                st.session_state.click_version += 1; st.rerun()
