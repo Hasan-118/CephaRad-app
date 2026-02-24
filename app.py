@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. ساختار مدل مرجع ---
+# --- ۱. معماری مرجع Aariz (کپی کلمه به کلمه از کد شما) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -23,8 +23,7 @@ class DoubleConv(nn.Module):
 class CephaUNet(nn.Module):
     def __init__(self, n_landmarks=29):
         super().__init__()
-        self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
         self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
         self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
@@ -38,126 +37,89 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. توابع کمکی ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع شما) ---
 @st.cache_resource
-def load_aariz_system():
-    model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    device = torch.device("cpu")
-    loaded_models = []
+def load_aariz_models():
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
-        if not os.path.exists(f):
-            gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
+        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
-            m = CephaUNet(n_landmarks=29).to(device)
-            ckpt = torch.load(f, map_location=device)
+            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
             m.eval(); loaded_models.append(m)
         except: pass
     return loaded_models, device
 
-def get_safe_magnifier(img, coord, size=120):
-    w, h = img.size
-    x, y = coord
-    left = max(0, min(int(x - size//2), w - size))
-    top = max(0, min(int(y - size//2), h - size))
-    crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
-    draw = ImageDraw.Draw(crop)
-    draw.line((180, 200, 220, 200), fill="red", width=2)
-    draw.line((200, 180, 200, 220), fill="red", width=2)
-    return crop, (left, top)
+def run_precise_prediction(img_pil, models, device):
+    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
+    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
+    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
+    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
+    coords = {}
+    for i in range(29):
+        hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
+        y, x = np.unravel_index(np.argmax(hm), hm.shape)
+        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+    return coords
 
-# --- ۳. رابط کاربری اصلی ---
-st.set_page_config(page_title="Aariz Precision V3.8", layout="wide")
-models, device = load_aariz_system()
+# --- ۳. رابط کاربری (UI) مطابق ساختار مرجع شما ---
+st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
+models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-# مقداردهی اولیه به ورژن کلیک
-if "click_version" not in st.session_state:
-    st.session_state.click_version = 0
+if "click_version" not in st.session_state: st.session_state.click_version = 0
 
+st.sidebar.header("📏 تنظیمات")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
-    raw_img = Image.open(uploaded_file).convert("RGB")
-    W, H = raw_img.size
-    
+    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        with st.spinner("AI Ensemble Analysis..."):
-            img_input = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
-            t = transforms.ToTensor()(img_input).unsqueeze(0).to(device)
-            with torch.no_grad():
-                preds = [m(t)[0].cpu().numpy() for m in models]
-            
-            coords = {}
-            scale_x, scale_y = W / 512.0, H / 512.0
-            ANT_IDX = [1, 20, 21, 22, 24, 25, 26, 28] 
-            TMJ_IDX = [11, 12, 15, 16] 
-            
-            for i in range(29):
-                hm = preds[1][i] if i in ANT_IDX else (preds[2][i] if i in TMJ_IDX else preds[0][i])
-                y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                coords[i] = [int(x * scale_x), int(y * scale_y)]
-            
-            st.session_state.lms = coords
-            st.session_state.file_id = uploaded_file.name
+        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
+        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-    col1, col2 = st.columns([1.2, 2])
-    
+    col1, col2 = st.columns([1.2, 2.5])
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
+        l_pos = st.session_state.lms[target_idx]; size_m = 180 
+        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_draw = ImageDraw.Draw(mag_crop)
+        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
         
-        # استفاده از ورژن کلیک در KEY برای ریست کردن ویجت بعد از هر جابجایی
-        mag_key = f"mag_{target_idx}_{st.session_state.click_version}"
-        res_mag = streamlit_image_coordinates(mag_img, key=mag_key)
-        
+        # استفاده از دقیقاً همان منطق مختصاتی که در کد شما بود
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale = 120 / 400
-            new_x = int(off_x + (res_mag["x"] * scale))
-            new_y = int(off_y + (res_mag["y"] * scale))
-            
-            # فقط اگر واقعاً کلیک جدیدی دور از مرکز انجام شده باشد
-            if abs(new_x - st.session_state.lms[target_idx][0]) > 0 or abs(new_y - st.session_state.lms[target_idx][1]) > 0:
-                st.session_state.lms[target_idx] = [new_x, new_y]
-                st.session_state.click_version += 1 # تغییر ورژن برای ریست کردن ویجت در ران بعدی
-                st.rerun()
+            scale_mag = size_m / 400
+            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            if st.session_state.lms[target_idx] != new_c:
+                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 Full View")
-        draw_img = raw_img.copy()
-        draw = ImageDraw.Draw(draw_img)
-        l = st.session_state.lms
-        for i, pos in l.items():
-            color = "red" if i == target_idx else "#00FF00"
-            r = 15 if i == target_idx else 8
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+        st.subheader("🖼 نمای گرافیکی")
+        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        for i, pos in l.items():
+            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
+            r = 10 if i == target_idx else 6
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            name_text = landmark_names[i]
+            # ترسیم نام لندمارک مطابق منطق دقیق کد شما
+            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
+            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
+            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 850
-            m_coord = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_coord:
-                st.session_state.lms[target_idx] = m_coord
-                st.session_state.click_version += 1
-                st.rerun()
-
-    # --- آنالیز Steiner ---
-    st.divider()
-    def get_ang(p1, p2, p3):
-        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        n = np.linalg.norm(v1)*np.linalg.norm(v2)
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 1)
-    
-    sna = get_ang(l[10], l[4], l[0])
-    snb = get_ang(l[10], l[4], l[2])
-    c1, c2, c3 = st.columns(3)
-    c1.metric("SNA", f"{sna}°")
-    c2.metric("SNB", f"{snb}°")
-    c3.metric("ANB", f"{round(sna-snb, 1)}°")
+            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
