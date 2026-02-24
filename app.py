@@ -100,18 +100,19 @@ if uploaded_file:
     with col1:
         st.subheader("🔍 Magnifier")
         cur = l[target_idx]; box = 100
-        # --- Safe Padding: حل قطعی ValueError بدون تغییر در عملکرد ---
-        img_p = ImageOps.expand(img, border=box, fill='black')
-        p_x, p_y = cur[0] + box, cur[1] + box
-        crop = img_p.crop((p_x - box, p_y - box, p_x + box, p_y + box)).resize((400, 400), Image.NEAREST)
+        # Safe Cropping (Ref V7.8)
+        left, top = max(0, cur[0]-box), max(0, cur[1]-box)
+        right, bottom = min(W, cur[0]+box), min(H, cur[1]+box)
+        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
         
         draw_m = ImageDraw.Draw(crop)
-        draw_m.line((190, 200, 210, 200), fill="red", width=2)
-        draw_m.line((200, 190, 200, 210), fill="red", width=2)
+        draw_m.line((195, 200, 205, 200), fill="red", width=2)
+        draw_m.line((200, 195, 200, 205), fill="red", width=2)
         
         res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
         if res_m:
-            l[target_idx] = [int(cur[0] - box + (res_m['x'] * (200/400))), int(cur[1] - box + (res_m['y'] * (200/400)))]
+            sx, sy = (right-left)/400, (bottom-top)/400
+            l[target_idx] = [int(left + res_m['x']*sx), int(top + res_m['y']*sy)]
             st.session_state.v += 1; st.rerun()
 
     with col2:
@@ -129,5 +130,5 @@ if uploaded_file:
             l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
             st.session_state.v += 1; st.rerun()
 
-    if st.sidebar.button("💾 Save & Finalize"):
-        st.sidebar.success(f"Landmarks for {uploaded_file.name} saved successfully.")
+    if st.sidebar.button("💾 Save Landmarks"):
+        st.sidebar.success("Coordinates saved successfully.")
