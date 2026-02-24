@@ -2,129 +2,125 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
-import os, gdown
+import os
+import gdown
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- [Core Architecture: DoubleConv & CephaUNet] ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
 class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super(DoubleConv, self).__init__()
+    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
+        super().__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True), nn.Dropout2d(p=dropout_prob),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
     def forward(self, x): return self.conv(x)
 
 class CephaUNet(nn.Module):
     def __init__(self, n_landmarks=29):
-        super(CephaUNet, self).__init__()
-        self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        super().__init__()
+        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
-        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.conv_up1 = DoubleConv(512, 256)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv_up3 = DoubleConv(128, 64)
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
+        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
+        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2); self.conv_up2 = DoubleConv(256, 128)
+        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2); self.conv_up3 = DoubleConv(128, 64)
         self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
-
     def forward(self, x):
         x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
-        u1 = self.up1(x4); u1 = torch.cat([u1, x3], dim=1); c1 = self.conv_up1(u1)
-        u2 = self.up2(c1); u2 = torch.cat([u2, x2], dim=1); c2 = self.conv_up2(u2)
-        u3 = self.up3(c2); u3 = torch.cat([u3, x1], dim=1); c3 = self.conv_up3(u3)
-        return self.outc(c3)
+        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
+        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
+        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
+        return self.outc(x)
 
-# --- [Model Loading: 3-Model Ensemble System] ---
+# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {
-        'm1': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'm2': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
-        'm3': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
-    }
-    device = torch.device("cpu")
-    loaded_models = []
-    for key, file_id in model_ids.items():
-        model_path = f"{key}.pth"
-        if not os.path.exists(model_path):
-            gdown.download(f'https://drive.google.com/uc?id={file_id}', model_path, quiet=True)
-        model = CephaUNet(n_landmarks=29).to(device)
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-        state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
-        model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items() if k.replace('module.', '') in model.state_dict()}, strict=False)
-        model.eval()
-        loaded_models.append(model)
+    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
+    device = torch.device("cpu"); loaded_models = []
+    for f, fid in model_ids.items():
+        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
+        try:
+            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
+            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+            m.eval(); loaded_models.append(m)
+        except: pass
     return loaded_models, device
 
-# --- [Main Setup] ---
+def run_precise_prediction(img_pil, models, device):
+    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
+    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
+    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
+    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
+    coords = {}
+    for i in range(29):
+        hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
+        y, x = np.unravel_index(np.argmax(hm), hm.shape)
+        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+    return coords
+
+# --- ۳. رابط کاربری (UI) ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
-landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
+landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-st.sidebar.title("🩺 Aariz Station V7.8")
-uploaded_file = st.sidebar.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
+if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-if uploaded_file:
-    if "lms" not in st.session_state or st.session_state.file_id != uploaded_file.name:
-        img_raw = Image.open(uploaded_file).convert("RGB")
-        st.session_state.img = img_raw
-        W, H = img_raw.size; ratio = 512 / max(W, H)
-        img_rs = img_raw.convert("L").resize((int(W*ratio), int(H*ratio)), Image.NEAREST)
-        canvas = Image.new("L", (512, 512)); px, py = (512-img_rs.width)//2, (512-img_rs.height)//2
-        canvas.paste(img_rs, (px, py))
-        tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            preds = [m(tensor)[0].cpu().numpy() for m in models]
-            lms = {}
-            for i in range(29):
-                m_idx = 1 if i in {10, 14, 9, 5, 28, 20} else (2 if i in {7, 11, 12, 15} else 0)
-                y, x = divmod(np.argmax(preds[m_idx][i]), 512)
-                lms[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-        st.session_state.lms = lms
-        st.session_state.file_id = uploaded_file.name
-        st.session_state.v = 0
+st.sidebar.header("📏 تنظیمات نمایش")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
-    l = st.session_state.lms; img = st.session_state.img; W, H = img.size
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+if uploaded_file and len(models) == 3:
+    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
+    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
+        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
+        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
 
-    col1, col2 = st.columns([1.5, 3.5])
-    
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    if st.sidebar.button("🔄 Reset Current Point"):
+        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
+        st.session_state.click_version += 1; st.rerun()
+
+    col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 Magnifier")
-        cur = l[target_idx]; box = 100
-        # --- منطق کراپ دقیقاً مطابق مرجع ---
-        left, top, right, bottom = cur[0]-box, cur[1]-box, cur[0]+box, cur[1]+box
-        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
-        
-        draw_m = ImageDraw.Draw(crop)
-        draw_m.line((195, 200, 205, 200), fill="red", width=2)
-        draw_m.line((200, 195, 200, 205), fill="red", width=2)
-        
-        res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
-        if res_m:
-            sx, sy = (right-left)/400, (bottom-top)/400
-            l[target_idx] = [int(left + res_m['x']*sx), int(top + res_m['y']*sy)]
-            st.session_state.v += 1; st.rerun()
+        st.subheader("🔍 Micro-Adjustment")
+        l_pos = st.session_state.lms[target_idx]; size_m = 180 
+        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_draw = ImageDraw.Draw(mag_crop)
+        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
+        if res_mag:
+            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            if st.session_state.lms[target_idx] != new_c:
+                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 Cephalogram View")
-        sc = 850 / W
-        disp = img.copy().resize((850, int(H * sc)), Image.NEAREST)
-        draw = ImageDraw.Draw(disp)
-        for i, p in l.items():
-            clr = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            draw.ellipse([p[0]*sc-3, p[1]*sc-3, p[0]*sc+3, p[1]*sc+3], fill=clr)
-            draw.text((p[0]*sc+8, p[1]*sc-8), f"{i}:{landmark_names[i]}", fill=clr)
+        st.subheader("🖼 نمای گرافیکی")
+        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
+        for i, pos in l.items():
+            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
+            r = 10 if i == target_idx else 6
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            name_text = landmark_names[i]
+            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
+            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
+            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+
+        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
-            l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
-            st.session_state.v += 1; st.rerun()
+            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_c:
+                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
+
+    if st.sidebar.button("💾 ذخیره مختصات"):
+        st.sidebar.write("مختصات لندمارک‌ها آماده است.")
