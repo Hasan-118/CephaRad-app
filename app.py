@@ -37,7 +37,6 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -66,70 +65,54 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) با کش تصویر برای سرعت بالا ---
+# --- ۳. رابط کاربری (UI) ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-if "click_version" not in st.session_state: st.session_state.click_version = 0
+if "v" not in st.session_state: st.session_state.v = 0
 
-st.sidebar.header("📏 تنظیمات")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
-    # جلوگیری از پردازش مجدد تصویر در هر کلیک
-    if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        raw_img = Image.open(uploaded_file).convert("RGB")
-        st.session_state.raw_img = raw_img
-        st.session_state.W, st.session_state.H = raw_img.size
-        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy()
-        st.session_state.file_id = uploaded_file.name
+    if "raw" not in st.session_state or st.session_state.fid != uploaded_file.name:
+        raw = Image.open(uploaded_file).convert("RGB")
+        st.session_state.raw = raw; st.session_state.fid = uploaded_file.name
+        st.session_state.lms = run_precise_prediction(raw, models, device)
+        st.session_state.disp_base = raw.resize((850, int(raw.height * (850/raw.width))), Image.LANCZOS)
 
-    raw_img = st.session_state.raw_img
-    W, H = st.session_state.W, st.session_state.H
-    
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    
-    if st.sidebar.button("🔄 Reset Point"):
-        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
-        st.session_state.click_version += 1; st.rerun()
+    raw = st.session_state.raw; lms = st.session_state.lms; W, H = raw.size
+    t_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    text_scale = st.sidebar.slider("🔤 مقیاس نام:", 1, 10, 3)
 
-    col1, col2 = st.columns([1.2, 2.5])
-    
-    with col1:
+    c1, c2 = st.columns([1.2, 2.5])
+    with c1:
         st.subheader("🔍 Magnifier")
-        l_pos = st.session_state.lms[target_idx]; size_m = 180 
-        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.NEAREST)
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 400
-            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c
-                st.session_state.click_version += 1; st.rerun()
+        p = lms[t_idx]; b = 90
+        left, top = max(0, min(p[0]-b, W-2*b)), max(0, min(p[1]-b, H-2*b))
+        crop = raw.crop((left, top, left+2*b, top+2*b)).resize((400, 400), Image.NEAREST)
+        draw_m = ImageDraw.Draw(crop)
+        draw_m.line((190, 200, 210, 200), fill="red", width=2); draw_m.line((200, 190, 200, 210), fill="red", width=2)
+        res_m = streamlit_image_coordinates(crop, key=f"m_{t_idx}_{st.session_state.v}")
+        if res_m:
+            ratio_m = (2*b)/400
+            lms[t_idx] = [int(left + res_m['x']*ratio_m), int(top + res_m['y']*ratio_m)]
+            st.session_state.v += 1; st.rerun()
 
-    with col2:
-        st.subheader("🖼 نمای گرافیکی")
-        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        
-        for i, pos in l.items():
-            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 10 if i == target_idx else 6
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = f"{i}"
-            # نمایش بهینه متن
-            draw.text((pos[0]+r+5, pos[1]-r), name_text, fill=color)
-
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
+    with c2:
+        st.subheader("🖼 Cephalogram")
+        disp = st.session_state.disp_base.copy(); draw = ImageDraw.Draw(disp); sc = 850/W
+        for i, pos in lms.items():
+            clr = (255,0,0) if i == t_idx else (0,255,0)
+            draw.ellipse([pos[0]*sc-4, pos[1]*sc-4, pos[0]*sc+4, pos[1]*sc+4], fill=clr, outline="white")
+            # بازگرداندن دقیق رسم نام لندمارک طبق مرجع
+            name = landmark_names[i]
+            temp = Image.new('RGBA', (len(name)*10, 15), (0,0,0,0))
+            ImageDraw.Draw(temp).text((0,0), name, fill=clr)
+            txt_rs = temp.resize((int(temp.width*text_scale/2), int(temp.height*text_scale/2)), Image.NEAREST)
+            disp.paste(txt_rs, (int(pos[0]*sc+10), int(pos[1]*sc-10)), txt_rs)
+            
+        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
         if res_main:
-            c_scale = W / 850
-            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c
-                st.session_state.click_version += 1; st.rerun()
+            lms[t_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
+            st.session_state.v += 1; st.rerun()
