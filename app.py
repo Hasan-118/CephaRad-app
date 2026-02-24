@@ -8,10 +8,10 @@ import gc
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
-from fpdf import FPDF  # کتابخانه استاندارد برای تولید PDF
+from fpdf import FPDF
 import base64
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر - طبق پروتکل V7.8.16) ---
+# --- ۱. معماری مرجع Aariz (طبق پروتکل V7.8.16 - بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -40,7 +40,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (بدون تغییر) ---
+# --- ۲. لودر و توابع پیش‌بینی (مرجع V7.8.16) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -131,7 +131,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. تحلیل و محاسبات (دقیقاً طبق مرجع) ---
+    # --- ۴. محاسبات آنالیز (طبق مرجع) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -148,33 +148,31 @@ if uploaded_file and len(models) == 3:
     diff_mcnamara = round(co_gn - co_a, 2)
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    
-    # افزوده شده: آنالیز دندانی
-    uit_angle = get_ang(l[10], l[4], l[21], l[20]) # U1 to SN
-    lit_angle = get_ang(l[14], l[3], l[23], l[17]) # L1 to MP (IMPA)
+    uit_angle = get_ang(l[10], l[4], l[21], l[20])
+    lit_angle = get_ang(l[14], l[3], l[23], l[17])
     
     diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
     fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal Growth"
 
-    # --- ۵. تولید PDF حرفه‌ای (بخش جدید افزایشی) ---
+    # --- ۵. تولید گزارش PDF حرفه‌ای (اصلاح شده برای رفع خطای Unicode) ---
     def create_pdf_report():
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
+        # استفاده از فونت استاندارد و حذف کاراکترهای غیرمجاز
+        pdf.set_font("Helvetica", 'B', 16)
         pdf.cell(200, 15, "Aariz Precision Station - Clinical Report", ln=True, align='C')
-        pdf.set_font("Arial", '', 10)
+        pdf.set_font("Helvetica", '', 10)
         pdf.cell(200, 10, f"Patient Name: {patient_name} | Gender: {gender}", ln=True, align='C')
         pdf.ln(10)
         
-        # جدول داده‌ها
-        pdf.set_font("Arial", 'B', 11)
+        pdf.set_font("Helvetica", 'B', 11)
         pdf.set_fill_color(240, 240, 240)
         headers = ["Measurement", "Value", "Normal Range", "Interpretation"]
         col_widths = [45, 35, 45, 65]
         for i, h in enumerate(headers): pdf.cell(col_widths[i], 10, h, 1, 0, 'C', True)
         pdf.ln()
         
-        pdf.set_font("Arial", '', 10)
+        pdf.set_font("Helvetica", '', 10)
         rows = [
             ["SNA Angle", f"{sna} deg", "82 +/- 2", "Maxilla Position"],
             ["SNB Angle", f"{snb} deg", "80 +/- 2", "Mandible Position"],
@@ -191,37 +189,38 @@ if uploaded_file and len(models) == 3:
             for i, val in enumerate(r): pdf.cell(col_widths[i], 10, str(val), 1)
             pdf.ln()
             
-        # نقشه راه درمان
         pdf.ln(10)
-        pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, "Clinical Roadmap & Treatment Suggestions:", ln=True)
-        pdf.set_font("Arial", '', 10)
+        pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "Clinical Roadmap & Treatment Suggestions:", ln=True)
+        pdf.set_font("Helvetica", '', 10)
         
         if abs(anb) > 8:
-            roadmap = "CRITICAL: Severe skeletal discrepancy detected. Orthognathic surgery consultation is strongly recommended. Orthodontic camouflage may be limited."
+            roadmap = "CRITICAL: Severe skeletal discrepancy. Surgical consultation recommended."
         elif abs(anb) > 4:
-            roadmap = "MODERATE: Skeletal discrepancy present. Orthodontic camouflage with extractions or growth modification (if growing) could be considered."
+            roadmap = "MODERATE: Skeletal discrepancy present. Consider camouflage or growth mod."
         else:
-            roadmap = "MILD/NORMAL: Treatment focus should be on dental alignment and achieving ideal occlusion."
+            roadmap = "NORMAL: Focus on dental alignment and occlusion."
             
         pdf.multi_cell(0, 8, roadmap)
-        return pdf.output(dest='S').encode('latin-1')
+        # استفاده از encode latin-1 به صورت ایمن
+        return pdf.output(dest='S').encode('latin-1', 'replace')
 
-    # نمایش در صفحه Streamlit
+    # نمایش نتایج در استریم‌لیت
     st.header(f"📑 گزارش و تفسیر بالینی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🦷 تحلیل اسکلتال و دندانی")
-        st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
+        st.metric("ANB Angle", f"{anb} deg", f"SNA: {sna} / SNB: {snb}")
         st.metric("McNamara Difference", f"{diff_mcnamara} mm", "Normal: 25-30mm")
-        st.metric("U1 to SN / IMPA", f"{uit_angle}° / {lit_angle}°")
+        st.metric("U1 to SN / IMPA", f"{uit_angle} deg / {lit_angle} deg")
         st.info(f"**تشخیص اسکلتال:** {diag}")
 
     with c2:
         st.subheader("👄 زیبایی و بافت نرم")
         st.write(f"• فاصله لب بالا تا خط E: **{dist_ls} mm**")
         st.write(f"• فاصله لب پایین تا خط E: **{dist_li} mm**")
-        st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
+        st.warning(f"**الگوی رشد:** {fma_desc} ({fma} deg)")
 
+        # دکمه دانلود PDF (بدون خطا)
         pdf_bytes = create_pdf_report()
         st.download_button(
             label="📥 دانلود گزارش PDF حرفه‌ای",
