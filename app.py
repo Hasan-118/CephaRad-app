@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- [معماری مطابق کد مرجع] ---
+# --- [Core Architecture] ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super(DoubleConv, self).__init__()
@@ -54,7 +54,7 @@ def load_aariz_models():
         m.eval(); ms.append(m)
     return ms, device
 
-# --- [تنظیمات و منطق برنامه] ---
+# --- [Application Logic] ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
@@ -86,7 +86,6 @@ if uploaded_file:
     with c1:
         st.subheader("🔍 Magnifier")
         cur = l[t_idx]; b = 100
-        # استفاده مستقیم از منطق کراپ کد مرجع
         left, top, right, bottom = cur[0]-b, cur[1]-b, cur[0]+b, cur[1]+b
         crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
