@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageOps
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مدل (تثبیت شده بدون BatchNorm برای هماهنگی با فایل‌های pth) ---
+# --- ۱. معماری مدل (فوق‌سازگار با چک‌پوینت‌های فاقد BatchNorm) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -41,7 +41,7 @@ class CephaUNet(nn.Module):
         u3 = self.up3(c2); u3 = torch.cat([u3, x1], dim=1); c3 = self.conv_up3(u3)
         return self.outc(c3)
 
-# --- ۲. بارگذاری مدل‌ها با رفع تضاد لایه‌ها ---
+# --- ۲. بارگذاری هوشمند مدل‌ها ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'m1': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'm2': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'm3': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -52,80 +52,101 @@ def load_aariz_models():
         m = CephaUNet().to(dev)
         ckpt = torch.load(path, map_location=dev, weights_only=False)
         sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        # فیلتر کردن لایه‌ها بر اساس نام و ابعاد برای جلوگیری از RuntimeError
         new_sd = {k.replace('module.', ''): v for k, v in sd.items() if k.replace('module.', '') in m.state_dict() and v.shape == m.state_dict()[k.replace('module.', '')].shape}
         m.load_state_dict(new_sd, strict=False)
         m.eval(); ms.append(m)
     return ms, dev
 
-# --- ۳. رابط کاربری و بدنه اصلی ---
-st.set_page_config(page_title="Aariz Precision V7.8.10", layout="wide")
+# --- ۳. توابع آنالیز هندسی ---
+def get_ang(p1, p2, p3, p4=None):
+    v1 = np.array(p1)-np.array(p2) if p4 is None else np.array(p2)-np.array(p1)
+    v2 = np.array(p3)-np.array(p2) if p4 is None else np.array(p4)-np.array(p3)
+    norm = (np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-9
+    return round(float(np.degrees(np.arccos(np.clip(np.dot(v1, v2)/norm, -1, 1)))), 2)
+
+# --- ۴. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.11", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
 
-st.sidebar.title("🧬 Aariz Precision Station")
-uploaded_file = st.sidebar.file_uploader("Upload Cephalogram", type=['png', 'jpg', 'jpeg'])
+st.sidebar.header("📊 مرحله دوم: آنالیز")
+analysis_mode = st.sidebar.multiselect("انتخاب آنالیزها برای نمایش:", 
+                                     ["Steiner (SNA, SNB, ANB)", "Wits Appraisal", "McNamara (Vertical)", "Soft Tissue (E-Line)"])
+
+uploaded_file = st.sidebar.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file:
     if "lms" not in st.session_state or st.session_state.file_id != uploaded_file.name:
         img_raw = Image.open(uploaded_file).convert("RGB")
         st.session_state.img = img_raw
+        # پیش‌بینی اولیه
         W, H = img_raw.size; ratio = 512 / max(W, H)
         img_rs = img_raw.convert('L').resize((int(W*ratio), int(H*ratio)), Image.NEAREST)
         canvas = Image.new("L", (512, 512)); px, py = (512-img_rs.width)//2, (512-img_rs.height)//2
         canvas.paste(img_rs, (px, py)); tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-        
         with torch.no_grad():
             outs = [m(tensor)[0].cpu().numpy() for m in models]
             lms = {}
             for i in range(29):
                 m_idx = 1 if i in {10, 14, 9, 5, 28, 20} else (2 if i in {7, 11, 12, 15} else 0)
                 y, x = divmod(np.argmax(outs[m_idx][i]), 512)
-                # اطمینان از قرارگیری نقاط در محدوده تصویر
                 lms[i] = [int(np.clip((x-px)/ratio, 0, W-1)), int(np.clip((y-py)/ratio, 0, H-1))]
         st.session_state.lms = lms
         st.session_state.file_id = uploaded_file.name
         st.session_state.v = 0
 
     l = st.session_state.lms; img = st.session_state.img; W, H = img.size
-    target_idx = st.sidebar.selectbox("🎯 Target Landmark:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     col1, col2 = st.columns([1.2, 2.8])
     with col1:
         st.subheader("Magnifier")
         cur = l[target_idx]; box = 100
-        
-        # --- حل قطعی ValueError: استفاده از Padding برای نقاط لبه تصویر ---
-        # ابتدا یک حاشیه سیاه دور تصویر اضافه می‌کنیم تا کراپ در لبه‌ها خطا ندهد
+        # استفاده از Safe Padding برای جلوگیری از خطای ValueError
         img_padded = ImageOps.expand(img, border=box, fill='black')
-        # مختصات جدید در تصویر پد شده
-        px_new, py_new = cur[0] + box, cur[1] + box
-        # کراپ با تضمین اینکه همیشه ابعاد مثبت و صحیح است
-        crop = img_padded.crop((px_new - box, py_new - box, px_new + box, py_new + box)).resize((400, 400), Image.NEAREST)
-        
+        px_pad, py_pad = cur[0] + box, cur[1] + box
+        crop = img_padded.crop((px_pad-box, py_pad-box, px_pad+box, py_pad+box)).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
-        draw_m.line((195, 200, 205, 200), fill="red", width=1)
-        draw_m.line((200, 195, 200, 205), fill="red", width=1)
-        
+        draw_m.line((190, 200, 210, 200), fill="red", width=1); draw_m.line((200, 190, 200, 210), fill="red", width=1)
         res_m = streamlit_image_coordinates(crop, key=f"m_{st.session_state.v}")
         if res_m:
-            # تبدیل مختصات مگنیفایر به مختصات تصویر اصلی
-            new_x = cur[0] - box + (res_m['x'] * (2*box/400))
-            new_y = cur[1] - box + (res_m['y'] * (2*box/400))
-            l[target_idx] = [int(np.clip(new_x, 0, W-1)), int(np.clip(new_y, 0, H-1))]
+            l[target_idx] = [int(cur[0]-box + (res_m['x']*2*box/400)), int(cur[1]-box + (res_m['y']*2*box/400))]
             st.session_state.v += 1; st.rerun()
 
     with col2:
         sc = 850 / W; disp = img.resize((850, int(H*sc)), Image.NEAREST)
         draw = ImageDraw.Draw(disp)
+        def sp(idx): return (l[idx][0]*sc, l[idx][1]*sc)
+
+        # --- رسم گرافیک آنالیز (فقط در صورت انتخاب مرحله دوم) ---
+        if "Steiner (SNA, SNB, ANB)" in analysis_mode:
+            draw.line([sp(10), sp(4)], fill="yellow", width=2) # S-N
+            draw.line([sp(4), sp(0)], fill="cyan", width=1)   # N-A
+            draw.line([sp(4), sp(2)], fill="magenta", width=1)# N-B
+            
+        if "Soft Tissue (E-Line)" in analysis_mode:
+            draw.line([sp(8), sp(6)], fill="white", width=2) # Pn to Pog
+
+        # رسم لندمارک‌ها
         for i, p in l.items():
             clr = (255,0,0) if i == target_idx else (0,255,0)
             draw.ellipse([p[0]*sc-3, p[1]*sc-3, p[0]*sc+3, p[1]*sc+3], fill=clr)
-            if i == target_idx: draw.text((p[0]*sc+8, p[1]*sc-8), landmark_names[i], fill=clr)
-        
+            draw.text((p[0]*sc+5, p[1]*sc-5), landmark_names[i], fill=clr)
+
         res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
         if res_main:
             l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
             st.session_state.v += 1; st.rerun()
 
-    st.success(f"Editing {landmark_names[target_idx]}. Point is at {l[target_idx]}")
+    # --- نمایش جداول آنالیز و تفسیر ---
+    if analysis_mode:
+        with st.expander("📝 گزارش تحلیلی و تفسیر بالینی", expanded=True):
+            cols = st.columns(len(analysis_mode))
+            for idx, mode in enumerate(analysis_mode):
+                with cols[idx]:
+                    if "Steiner" in mode:
+                        sna = get_ang(l[10], l[4], l[0])
+                        snb = get_ang(l[10], l[4], l[2])
+                        anb = round(sna - snb, 2)
+                        st.metric("SNA / SNB", f"{sna}° / {snb}°")
+                        st.metric("ANB (Class)", f"{anb}°", "Skeletal II" if anb > 4 else ("Skeletal III" if anb < 0 else "Normal"))
