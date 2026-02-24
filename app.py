@@ -95,30 +95,29 @@ if uploaded_file:
     l = st.session_state.lms; img = st.session_state.img; W, H = img.size
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
-    col1, col2 = st.columns([1.5, 3])
+    col1, col2 = st.columns([1.5, 3.5])
     
     with col1:
         st.subheader("🔍 Magnifier")
         cur = l[target_idx]; box = 100
-        left, top = max(0, cur[0]-box), max(0, cur[1]-box)
-        right, bottom = min(W, cur[0]+box), min(H, cur[1]+box)
-        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
+        # --- اصلاح قطعی با استفاده از Padding برای جلوگیری از ValueError در لبه‌ها ---
+        img_padded = ImageOps.expand(img, border=box, fill='black')
+        p_x, p_y = cur[0] + box, cur[1] + box
+        crop = img_padded.crop((p_x - box, p_y - box, p_x + box, p_y + box)).resize((400, 400), Image.NEAREST)
         
         draw_m = ImageDraw.Draw(crop)
-        draw_m.line((195, 200, 205, 200), fill="red", width=2)
-        draw_m.line((200, 195, 200, 205), fill="red", width=2)
+        draw_m.line((190, 200, 210, 200), fill="red", width=2)
+        draw_m.line((200, 190, 200, 210), fill="red", width=2)
         
         res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
         if res_m:
-            sx, sy = (right-left)/400, (bottom-top)/400
-            l[target_idx] = [int(left + res_m['x']*sx), int(top + res_m['y']*sy)]
+            l[target_idx] = [int(cur[0] - box + (res_m['x'] * (200/400))), int(cur[1] - box + (res_m['y'] * (200/400)))]
             st.session_state.v += 1; st.rerun()
 
     with col2:
         st.subheader("🖼 Cephalogram View")
         sc = 850 / W
-        h_resized = int(H * sc)
-        disp = img.copy().resize((850, h_resized), Image.NEAREST)
+        disp = img.copy().resize((850, int(H * sc)), Image.NEAREST)
         draw = ImageDraw.Draw(disp)
         for i, p in l.items():
             clr = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -129,6 +128,3 @@ if uploaded_file:
         if res_main:
             l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
             st.session_state.v += 1; st.rerun()
-
-    if st.sidebar.button("💾 Generate Clinical Report"):
-        st.sidebar.success("Analysis Processed.")
