@@ -63,7 +63,7 @@ def load_aariz_models():
         loaded_models.append(model)
     return loaded_models, device
 
-# --- [App Configuration & UI] ---
+# --- [Main Setup] ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
@@ -85,7 +85,6 @@ if uploaded_file:
             preds = [m(tensor)[0].cpu().numpy() for m in models]
             lms = {}
             for i in range(29):
-                # Specialist allocation logic
                 m_idx = 1 if i in {10, 14, 9, 5, 28, 20} else (2 if i in {7, 11, 12, 15} else 0)
                 y, x = divmod(np.argmax(preds[m_idx][i]), 512)
                 lms[i] = [int((x - px) / ratio), int((y - py) / ratio)]
@@ -101,7 +100,6 @@ if uploaded_file:
     with col1:
         st.subheader("🔍 Magnifier")
         cur = l[target_idx]; box = 100
-        # Safe Cropping logic matching V7.8
         left, top = max(0, cur[0]-box), max(0, cur[1]-box)
         right, bottom = min(W, cur[0]+box), min(H, cur[1]+box)
         crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
@@ -118,4 +116,19 @@ if uploaded_file:
 
     with col2:
         st.subheader("🖼 Cephalogram View")
-        sc
+        sc = 850 / W
+        h_resized = int(H * sc)
+        disp = img.copy().resize((850, h_resized), Image.NEAREST)
+        draw = ImageDraw.Draw(disp)
+        for i, p in l.items():
+            clr = (255, 0, 0) if i == target_idx else (0, 255, 0)
+            draw.ellipse([p[0]*sc-3, p[1]*sc-3, p[0]*sc+3, p[1]*sc+3], fill=clr)
+            draw.text((p[0]*sc+8, p[1]*sc-8), f"{i}:{landmark_names[i]}", fill=clr)
+        
+        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
+        if res_main:
+            l[target_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
+            st.session_state.v += 1; st.rerun()
+
+    if st.sidebar.button("💾 Generate Clinical Report"):
+        st.sidebar.success("Analysis Processed.")
