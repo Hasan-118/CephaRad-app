@@ -100,19 +100,23 @@ if uploaded_file:
     with col1:
         st.subheader("🔍 Magnifier")
         cur = l[target_idx]; box = 100
-        # Safe Cropping (Ref V7.8)
-        left, top = max(0, cur[0]-box), max(0, cur[1]-box)
-        right, bottom = min(W, cur[0]+box), min(H, cur[1]+box)
-        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
+        # جلوگیری از ValueError با استفاده از کلمپ کردن مختصات (Clamp)
+        left = max(0, cur[0] - box)
+        top = max(0, cur[1] - box)
+        right = min(W, cur[0] + box)
+        bottom = min(H, cur[1] + box)
         
+        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
         draw_m.line((195, 200, 205, 200), fill="red", width=2)
         draw_m.line((200, 195, 200, 205), fill="red", width=2)
         
         res_m = streamlit_image_coordinates(crop, key=f"m_{target_idx}_{st.session_state.v}")
         if res_m:
-            sx, sy = (right-left)/400, (bottom-top)/400
-            l[target_idx] = [int(left + res_m['x']*sx), int(top + res_m['y']*sy)]
+            # محاسبه مجدد نقطه بر اساس ابعاد واقعی کراپ
+            scale_x = (right - left) / 400
+            scale_y = (bottom - top) / 400
+            l[target_idx] = [int(left + res_m['x'] * scale_x), int(top + res_m['y'] * scale_y)]
             st.session_state.v += 1; st.rerun()
 
     with col2:
@@ -131,4 +135,4 @@ if uploaded_file:
             st.session_state.v += 1; st.rerun()
 
     if st.sidebar.button("💾 Save Landmarks"):
-        st.sidebar.success("Coordinates saved successfully.")
+        st.sidebar.success("Coordinates saved.")
