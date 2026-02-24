@@ -54,7 +54,7 @@ def load_aariz_models():
         m.eval(); ms.append(m)
     return ms, device
 
-# --- [Application Logic] ---
+# --- [Application Setup] ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
@@ -66,30 +66,45 @@ if uploaded_file:
     if "lms" not in st.session_state or st.session_state.file_id != uploaded_file.name:
         img_raw = Image.open(uploaded_file).convert("RGB")
         st.session_state.img = img_raw
-        W, H = img_raw.size; ratio = 512 / max(W, H)
-        img_rs = img_raw.convert("L").resize((int(W*ratio), int(H*ratio)), Image.NEAREST)
-        canvas = Image.new("L", (512, 512)); px, py = (512-img_rs.width)//2, (512-img_rs.height)//2
-        canvas.paste(img_rs, (px, py)); tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
+        W, H = img_raw.size
+        
+        # پیش‌بینی هوشمند (منطق مرجع)
+        ratio = 512 / max(W, H)
+        img_rs = img_raw.convert("L").resize((int(W*ratio), int(H*ratio)), Image.BILINEAR)
+        canvas = Image.new("L", (512, 512))
+        px, py = (512 - img_rs.width) // 2, (512 - img_rs.height) // 2
+        canvas.paste(img_rs, (px, py))
+        
+        tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
         with torch.no_grad():
             preds = [m(tensor)[0].cpu().numpy() for m in models]
             lms = {}
             for i in range(29):
                 m_idx = 1 if i in {10, 14, 9, 5, 28, 20} else (2 if i in {7, 11, 12, 15} else 0)
                 y, x = divmod(np.argmax(preds[m_idx][i]), 512)
+                # بازگرداندن نقاط به ابعاد واقعی تصویر
                 lms[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-        st.session_state.lms = lms; st.session_state.file_id = uploaded_file.name; st.session_state.v = 0
+        
+        st.session_state.lms = lms
+        st.session_state.file_id = uploaded_file.name
+        st.session_state.v = 0
 
     l = st.session_state.lms; img = st.session_state.img; W, H = img.size
     t_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
     c1, c2 = st.columns([1.5, 3.5])
+    
     with c1:
         st.subheader("🔍 Magnifier")
         cur = l[t_idx]; b = 100
+        # برش تصویر بر اساس ابعاد واقعی
         left, top, right, bottom = cur[0]-b, cur[1]-b, cur[0]+b, cur[1]+b
-        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
+        crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.BILINEAR)
+        
         draw_m = ImageDraw.Draw(crop)
-        draw_m.line((195, 200, 205, 200), fill="red", width=2); draw_m.line((200, 195, 200, 205), fill="red", width=2)
+        draw_m.line((190, 200, 210, 200), fill="red", width=2)
+        draw_m.line((200, 190, 200, 210), fill="red", width=2)
+        
         res_m = streamlit_image_coordinates(crop, key=f"m_{t_idx}_{st.session_state.v}")
         if res_m:
             sx, sy = (right-left)/400, (bottom-top)/400
@@ -98,12 +113,14 @@ if uploaded_file:
 
     with c2:
         st.subheader("🖼 Cephalogram View")
-        sc = 850 / W; disp = img.copy().resize((850, int(H*sc)), Image.NEAREST)
+        sc = 850 / W
+        disp = img.copy().resize((850, int(H * sc)), Image.BILINEAR)
         draw = ImageDraw.Draw(disp)
         for i, p in l.items():
-            clr = (255,0,0) if i == t_idx else (0,255,0)
+            clr = (255, 0, 0) if i == t_idx else (0, 255, 0)
             draw.ellipse([p[0]*sc-3, p[1]*sc-3, p[0]*sc+3, p[1]*sc+3], fill=clr)
-            draw.text((p[0]*sc+8, p[1]*sc-8), f"{i}:{landmark_names[i]}", fill=clr)
+            draw.text((p[0]*sc+8, p[1]*sc-8), f"{i}", fill=clr)
+        
         res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
         if res_main:
             l[t_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
