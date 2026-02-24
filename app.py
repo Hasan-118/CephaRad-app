@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (کپی کلمه به کلمه از کد شما) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -37,7 +37,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع شما) ---
+# --- ۲. لودر و پیش‌بینی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -66,60 +66,68 @@ def run_precise_prediction(img_pil, models, device):
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
     return coords
 
-# --- ۳. رابط کاربری (UI) مطابق ساختار مرجع شما ---
+# --- ۳. رابط کاربری (UI) اصلاح شده ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-if "click_version" not in st.session_state: st.session_state.click_version = 0
+if "v" not in st.session_state: st.session_state.v = 0
 
-st.sidebar.header("📏 تنظیمات")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+st.sidebar.header("📏 Settings")
+text_scale = st.sidebar.slider("🔤 Label Scale:", 1, 10, 3)
+uploaded_file = st.sidebar.file_uploader("Upload Cephalogram:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
-    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
-    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy(); st.session_state.file_id = uploaded_file.name
-
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    if "raw" not in st.session_state or st.session_state.get("fid") != uploaded_file.name:
+        raw = Image.open(uploaded_file).convert("RGB")
+        st.session_state.raw = raw; st.session_state.fid = uploaded_file.name
+        st.session_state.lms = run_precise_prediction(raw, models, device)
+    
+    raw = st.session_state.raw; lms = st.session_state.lms; W, H = raw.size
+    t_idx = st.sidebar.selectbox("🎯 Target Landmark:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
 
     col1, col2 = st.columns([1.2, 2.5])
+    
     with col1:
-        st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 180 
-        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        st.subheader("🔍 Magnifier")
+        p = lms[t_idx]; b = 100 # Box size
+        # اصلاح منطق کراپ برای جلوگیری از ValueError (بر اساس لاگ شما)
+        left = max(0, min(p[0] - b, W - 2*b))
+        top = max(0, min(p[1] - b, H - 2*b))
+        right, bottom = left + 2*b, top + 2*b
         
-        # استفاده از دقیقاً همان منطق مختصاتی که در کد شما بود
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 400
-            new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
+        crop = raw.crop((left, top, right, bottom)).resize((400, 400), Image.LANCZOS)
+        draw_m = ImageDraw.Draw(crop)
+        draw_m.line((195, 200, 205, 200), fill="red", width=2)
+        draw_m.line((200, 195, 200, 205), fill="red", width=2)
+        
+        res_m = streamlit_image_coordinates(crop, key=f"m_{t_idx}_{st.session_state.v}")
+        if res_m:
+            ratio_m = (2*b) / 400
+            new_x = int(left + (res_m['x'] * ratio_m))
+            new_y = int(top + (res_m['y'] * ratio_m))
+            if lms[t_idx] != [new_x, new_y]:
+                lms[t_idx] = [new_x, new_y]
+                st.session_state.v += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
-        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        
-        for i, pos in l.items():
-            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 10 if i == target_idx else 6
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = landmark_names[i]
-            # ترسیم نام لندمارک مطابق منطق دقیق کد شما
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+        st.subheader("🖼 Main View")
+        disp = raw.copy(); draw = ImageDraw.Draw(disp)
+        for i, pos in lms.items():
+            clr = (255,0,0) if i == t_idx else (0,255,0)
+            r = 12 if i == t_idx else 8
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=clr, outline="white", width=2)
+            # رسم نام لندمارک مطابق سلیقه شما
+            name = landmark_names[i]
+            temp = Image.new('RGBA', (len(name)*10, 15), (0,0,0,0))
+            ImageDraw.Draw(temp).text((0,0), name, fill=clr)
+            txt_rs = temp.resize((int(temp.width*text_scale/2), int(temp.height*text_scale/2)), Image.NEAREST)
+            disp.paste(txt_rs, (pos[0]+r+5, pos[1]-r), txt_rs)
 
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
+        res_main = streamlit_image_coordinates(disp, width=850, key=f"main_{st.session_state.v}")
         if res_main:
-            c_scale = W / 850
-            m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
+            sc = W / 850 # تعریف متغیر sc که در لاگ خطا داده بود
+            new_x, new_y = int(res_main['x'] * sc), int(res_main['y'] * sc)
+            if lms[t_idx] != [new_x, new_y]:
+                lms[t_idx] = [new_x, new_y]
+                st.session_state.v += 1; st.rerun()
