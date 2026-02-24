@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- [Core Architecture: DoubleConv & CephaUNet] ---
+# --- [معماری مطابق کد مرجع] ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super(DoubleConv, self).__init__()
@@ -40,7 +40,6 @@ class CephaUNet(nn.Module):
         u3 = self.up3(c2); u3 = torch.cat([u3, x1], dim=1); c3 = self.conv_up3(u3)
         return self.outc(c3)
 
-# --- [Model Loading: 3-Model Ensemble] ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {'m1': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'm2': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'm3': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
@@ -55,7 +54,7 @@ def load_aariz_models():
         m.eval(); ms.append(m)
     return ms, device
 
-# --- [Application Logic] ---
+# --- [تنظیمات و منطق برنامه] ---
 st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 models, device = load_aariz_models()
@@ -87,7 +86,7 @@ if uploaded_file:
     with c1:
         st.subheader("🔍 Magnifier")
         cur = l[t_idx]; b = 100
-        # برگشت دقیق به منطق کراپ کد مرجع
+        # استفاده مستقیم از منطق کراپ کد مرجع
         left, top, right, bottom = cur[0]-b, cur[1]-b, cur[0]+b, cur[1]+b
         crop = img.crop((left, top, right, bottom)).resize((400, 400), Image.NEAREST)
         draw_m = ImageDraw.Draw(crop)
@@ -110,6 +109,3 @@ if uploaded_file:
         if res_main:
             l[t_idx] = [int(res_main['x']/sc), int(res_main['y']/sc)]
             st.session_state.v += 1; st.rerun()
-
-    if st.sidebar.button("💾 Save Coordinates"):
-        st.sidebar.success("Coordinates ready for export.")
