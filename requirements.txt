@@ -7,4 +7,5 @@ Pillow
 numpy
 pandas
 plotly
-fpdf
+fpdf2
+
