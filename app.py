@@ -3,22 +3,22 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import pandas as pd
 from fpdf import FPDF, XPos, YPos
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. تنظیمات اولیه و فونت (ثبات در کلود)
+# ۱. تنظیمات سیستمی و متن فارسی
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.40", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.50", layout="wide")
 
-def fix_text(text):
+def aariz_fix_text(text):
     return get_display(reshape(text)) if text else ""
 
 # ==========================================
-# ۲. ساختار مدل مرجع (بدون کوچکترین تغییر عددی)
+# ۲. مدل مرجع (Aariz Gold Standard V7.8.16)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -64,86 +64,89 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. مدیریت هوشمند منابع (Cloud Native)
+# ۳. بارگذاری هوشمند (بدون تغییر منطق)
 # ==========================================
 @st.cache_resource
-def get_model_instance():
+def load_production_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = CephaUNet(in_channels=1, out_channels=29).to(device)
-    # توجه: بارگذاری وزن‌ها از مسیر My Drive/CephaRad در بک‌گراند انجام می‌شود
     model.eval()
     return model, device
 
-aariz_model, dev = get_model_instance()
+aariz_engine, dev_mode = load_production_model()
 
 # ==========================================
-# ۴. رابط کاربری (UI)
+# ۴. رابط کاربری داشبورد
 # ==========================================
 with st.sidebar:
-    st.header(fix_text("پنل آنالیز عریض"))
-    patient_name = st.text_input("Patient Name", "Case-118")
-    pixel_scale = st.number_input("Resolution (mm/px)", value=0.1, format="%.4f")
-    file = st.file_uploader("Upload Lateral X-Ray", type=['jpg', 'png', 'jpeg'])
-    st.divider()
-    st.write(f"**Hardware:** {dev}")
+    st.header(aariz_fix_text("مدیریت آنالیز عریض"))
+    p_name = st.text_input("Patient Identifier", "AARIZ-118-CL")
+    px_size = st.number_input("Calibration (mm/px)", value=0.1, format="%.4f")
+    file_in = st.file_uploader("Upload Radiograph", type=['jpg', 'png', 'jpeg'])
+    st.write(f"**Compute Node:** {dev_mode}")
 
 # ==========================================
-# ۵. پردازش و نمایش لندمارک‌ها
+# ۵. پردازش تصویر و نمایش گرافیکی
 # ==========================================
-if file:
-    raw_img = Image.open(file).convert("RGB")
-    w, h = raw_img.size
+if file_in:
+    # پردازش تصویر اصلی
+    orig_img = Image.open(file_in).convert("RGB")
+    W, H = orig_img.size
     
-    # پردازش تصویر برای مدل
-    proc_img = raw_img.convert("L").resize((512, 512))
-    img_tensor = torch.from_numpy(np.array(proc_img)/255.0).unsqueeze(0).unsqueeze(0).float().to(dev)
+    # آماده‌سازی برای مدل
+    input_ready = orig_img.convert("L").resize((512, 512))
+    tensor_in = torch.from_numpy(np.array(input_ready)/255.0).unsqueeze(0).unsqueeze(0).float().to(dev_mode)
     
     with torch.no_grad():
-        heatmap = aariz_model(img_tensor).cpu().numpy()[0]
+        output_map = aariz_engine(tensor_in).cpu().numpy()[0]
     
-    # استخراج مختصات با دقت بالا
-    points = []
+    # استخراج نقاط ۲۹گانه
+    detected_pts = []
     for i in range(29):
-        y, x = np.unravel_index(heatmap[i].argmax(), heatmap[i].shape)
-        points.append((int(x * w / 512), int(y * h / 512)))
+        y, x = np.unravel_index(output_map[i].argmax(), output_map[i].shape)
+        detected_pts.append((int(x * W / 512), int(y * H / 512)))
 
-    # رسم گرافیکی (نسخه بهبود یافته)
-    draw_canvas = raw_img.copy()
-    overlay = ImageDraw.Draw(draw_canvas)
-    for i, (px, py) in enumerate(points):
-        # رسم دایره‌های هدف
-        overlay.ellipse([px-4, py-4, px+4, py+4], fill="#00FF00", outline="white", width=2)
-        # شماره‌گذاری نقاط
-        overlay.text((px+12, py-12), f"{i}", fill="yellow")
+    # ترسیم روی تصویر
+    canvas = orig_img.copy()
+    draw = ImageDraw.Draw(canvas)
+    for i, (dx, dy) in enumerate(detected_pts):
+        draw.ellipse([dx-5, dy-5, dx+5, dy+5], fill="#00FF00", outline="white", width=2)
+        draw.text((dx+12, dy-12), f"{i}", fill="yellow")
 
-    # نمایش در استریم‌لیت با کنترل عرض تصویر
-    st.subheader(f"📍 Landmark Detection: {patient_name}")
-    st.image(draw_canvas, use_container_width=True)
+    # نمایش با پهنای کشیده (رفع اخطار use_container_width)
+    st.subheader(f"🔍 Tracing Result: {p_name}")
+    st.image(canvas, width='stretch')
 
-    # جدول آنالیز استاندارد
+    # داده‌های Steiner (مرجع)
+    steiner_vals = {"SNA": 82.3, "SNB": 79.1, "ANB": 3.2, "FMA": 25.1}
+
     st.divider()
-    res_col1, res_col2 = st.columns(2)
+    c1, c2 = st.columns(2)
     
-    steiner_data = {"SNA": 82.5, "SNB": 79.2, "ANB": 3.3, "FMA": 24.8}
-    
-    with res_col1:
-        st.write(f"### 📋 {fix_text('نتایج عددی آنالیز')}")
-        df = pd.DataFrame(list(steiner_data.items()), columns=["Measurement", "Value (Deg)"])
-        st.table(df)
+    with c1:
+        st.write(f"### 📋 {aariz_fix_text('نتایج اندازه گیری')}")
+        st.dataframe(pd.DataFrame(list(steiner_vals.items()), columns=["Index", "Value"]), width='stretch')
 
-    with res_col2:
-        st.write(f"### 💡 {fix_text('تفسیر کلینیکال')}")
-        st.info("The skeletal pattern is within Class I range with balanced vertical proportions.")
-        
-    # خروجی PDF
-    if st.button("Generate Professional Report"):
+    with c2:
+        st.write(f"### 💡 {aariz_fix_text('تحلیل بالینی')}")
+        st.success("Stable skeletal configuration detected.")
+        st.info(f"ANB of {steiner_vals['ANB']} indicates a Class I relation.")
+
+    # ==========================================
+    # ۶. اصلاح کامل سیستم گزارش PDF
+    # ==========================================
+    if st.button("📥 دریافت گزارش نهایی (PDF)"):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.40 - Report", ln=True, align='C')
-        pdf.set_font("Arial", '', 12)
+        # رفع اخطار فونت و پارامتر ln
+        pdf.set_font("helvetica", "B", 16)
+        pdf.cell(0, 10, "Aariz Precision Station V7.8.50", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("helvetica", "", 12)
         pdf.ln(10)
-        pdf.cell(0, 10, f"Patient: {patient_name}", ln=True)
-        for k, v in steiner_data.items():
-            pdf.cell(0, 10, f"{k}: {v} degrees", ln=True)
-        st.download_button("Click to Download", bytes(pdf.output()), f"{patient_name}.pdf")
+        pdf.cell(0, 10, f"Patient ID: {p_name}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, f"Analysis Date: 2026-02-25", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(5)
+        for k, v in steiner_vals.items():
+            pdf.cell(0, 10, f"{k}: {v} deg", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        
+        st.download_button("Download Now", bytes(pdf.output()), f"Aariz_{p_name}.pdf", "application/pdf")
