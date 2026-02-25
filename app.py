@@ -11,7 +11,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF 
 from fpdf.enums import XPos, YPos
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر طبق پروتکل V7.8.16) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر طبق پروتکل) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -40,7 +40,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و پیش‌بینی هوشمند ---
+# --- ۲. لودر و پیش‌بینی هوشمند (۳ مدل متخصص) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -72,7 +72,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.21", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.22", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -109,18 +109,32 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
+        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        if all(k in l for k in [10, 4, 0, 2, 15, 5, 8, 27]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
+        # بازگرداندن دقیق تمام خطوط آنالیز مطابق نسخه مرجع
+        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27, 12, 13]):
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # S-N
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)     # N-A
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)  # N-B
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)  # FH
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)  # Mandibular
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)    # E-Line
+            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2)     # Co-A
+            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2)   # Co-Gn
 
+        # بازگرداندن دقیق لندمارک‌ها با نام و مقیاس‌پذیری متن
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 6; draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
-            if i == target_idx: draw.ellipse([pos[0]-10, pos[1]-10, pos[0]+10, pos[1]+10], outline="red", width=2)
+            r = 10 if i == target_idx else 6
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            
+            # ترسیم نام لندمارک با قابلیت تنظیم مقیاس
+            name_text = landmark_names[i]
+            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
+            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
+            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
+            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -128,73 +142,75 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات ---
+    # --- ۴. محاسبات و تفسیر بالینی (بازگشت دقیق به منطق مرجع) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        v1 = np.array(p1)-np.array(p2); v2 = np.array(p3)-np.array(p2) if p4 is None else np.array(p4)-np.array(p3)
+        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+
+    def dist_to_line(p, l1, l2):
+        p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
+        return np.linalg.norm(np.cross(l2_3d-l1_3d, l1_3d-p3d)) / (np.linalg.norm(l2_3d-l1_3d) + 1e-6)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
-    co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 2)
-    co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 2)
+    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
+    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
     diff_mcnamara = round(co_gn - co_a, 2)
-    uit_sn = get_ang(l[10], l[4], l[21], l[20]); lit_mp = get_ang(l[14], l[3], l[23], l[17])
-    diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
+    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
-    # --- ۵. گزارش دهی نهایی (V7.8.21 - Fixed PDF) ---
-    st.header("📑 گزارش نهایی")
+    st.header(f"📑 گزارش و تفسیر بالینی ({gender_raw})")
     c1, c2 = st.columns(2)
-    with c1: st.metric("ANB Angle", f"{anb} deg", f"SNA: {sna} / SNB: {snb}")
-    with c2: st.metric("McNamara Diff", f"{diff_mcnamara} mm")
+    with c1:
+        st.subheader("🦷 تحلیل اسکلتال")
+        st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
+        st.metric("McNamara Diff", f"{diff_mcnamara} mm", "Normal: 25-30mm")
+        diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
+        st.info(f"**تشخیص اسکلتال:** {diag}")
+        
+        st.subheader("💡 نقشه راه درمان (Roadmap)")
+        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 12:
+            st.error("🚨 ناهنجاری شدید فکی؛ نیاز به مشاوره جراحی فک و صورت.")
+        else:
+            st.success("✅ ناهنجاری متوسط؛ قابل درمان با ارتودنسی و Camouflage.")
 
+    with c2:
+        st.subheader("👄 زیبایی و بافت نرم")
+        st.write(f"• فاصله لب بالا تا خط E: **{dist_ls} mm**")
+        st.write(f"• فاصله لب پایین تا خط E: **{dist_li} mm**")
+        fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal"
+        st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
+
+    # --- ۵. خروجی PDF بهینه شده (بدون Warning) ---
     def create_pdf_report():
         pdf = FPDF(orientation="P", unit="mm", format="A4")
         pdf.add_page()
         pdf.set_font("Helvetica", size=16, style="B")
-        # تغییر پارامتر txt به text و ln به سیستم جدید مختصات
         pdf.cell(0, 15, text="Aariz Precision Station - Clinical Report", 
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
         
-        safe_gender = "Male" if "آقا" in gender_raw else "Female"
         pdf.set_font("Helvetica", size=10)
-        pdf.cell(0, 10, text=f"Patient: {p_name} | Gender: {safe_gender}", 
+        pdf.cell(0, 10, text=f"Patient: {p_name} | Diagnosis: {diag}", 
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-        pdf.ln(5)
         
         pdf.set_font("Helvetica", size=10, style="B")
         pdf.set_fill_color(240, 240, 240)
         pdf.cell(60, 10, "Parameter", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align='C', fill=True)
         pdf.cell(40, 10, "Value", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align='C', fill=True)
-        pdf.cell(90, 10, "Diagnosis", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C', fill=True)
+        pdf.cell(90, 10, "Interpretation", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C', fill=True)
         
         pdf.set_font("Helvetica", size=10)
-        table_data = [
-            ("ANB Angle", f"{anb} deg", diag),
-            ("SNA Angle", f"{sna} deg", "Maxilla Relation"),
-            ("SNB Angle", f"{snb} deg", "Mandible Relation"),
-            ("McNamara Diff", f"{diff_mcnamara} mm", "Skeletal Balance"),
-            ("U1 to SN", f"{uit_sn} deg", "Upper Proclination"),
-            ("IMPA (L1-MP)", f"{lit_mp} deg", "Lower Proclination")
-        ]
-        
-        for p, v, d in table_data:
-            pdf.cell(60, 10, p, border=1)
+        results = [("ANB Angle", f"{anb} deg", diag), ("FMA Angle", f"{fma} deg", fma_desc), 
+                   ("McNamara", f"{diff_mcnamara} mm", "Skeletal Balance"), ("E-Line Upper", f"{dist_ls} mm", "Soft Tissue")]
+        for n, v, i in results:
+            pdf.cell(60, 10, n, border=1)
             pdf.cell(40, 10, v, border=1)
-            pdf.cell(90, 10, d, border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
+            pdf.cell(90, 10, i, border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         return pdf.output()
 
-    try:
-        report_data = create_pdf_report()
-        st.download_button(
-            label="📥 دانلود PDF بدون خطا",
-            data=bytes(report_data),
-            file_name=f"Report_{p_name}.pdf",
-            mime="application/pdf"
-        )
-    except Exception as e:
-        st.error(f"Error: {e}")
+    if st.button("📄 تولید و دانلود PDF نهایی"):
+        report = create_pdf_report()
+        st.download_button("📥 دانلود فایل PDF", data=bytes(report), file_name=f"{p_name}_Report.pdf", mime="application/pdf")
 
-# پاکسازی حافظه در هر اجرا
 gc.collect()
