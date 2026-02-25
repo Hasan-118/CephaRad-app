@@ -15,3 +15,4 @@ arabic-reshaper
 python-bidi
 streamlit-image-coordinates==0.2.2
 fpdf2
+-
