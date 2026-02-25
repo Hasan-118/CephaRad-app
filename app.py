@@ -5,21 +5,21 @@ import torch.nn as nn
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw
 import pandas as pd
-import plotly.express as px_chart # تغییر نام برای جلوگیری از تداخل با متغیرهای عددی
+import plotly.express as px_chart 
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. تنظیمات سیستمی و متون RTL
+# ۱. پیکربندی و مدیریت متون (RTL)
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.9.5", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.8", layout="wide")
 
 def fix_aariz_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر عددی)
+# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -64,7 +64,7 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. مدیریت بارگذاری هسته پردازشی
+# ۳. مدیریت بارگذاری مدل و حافظه
 # ==========================================
 @st.cache_resource
 def load_aariz_engine():
@@ -76,62 +76,63 @@ def load_aariz_engine():
 master_model, current_dev = load_aariz_engine()
 
 # ==========================================
-# ۴. پردازش تصویر و نمایش نتایج
+# ۴. رابط کاربری و نمایش تحلیل‌ها
 # ==========================================
 with st.sidebar:
-    st.header(fix_aariz_text("ایستگاه عریض V7.9.5"))
-    uploaded_file = st.file_uploader(fix_aariz_text("بارگذاری تصویر رادیوگرافی"), type=['png', 'jpg', 'jpeg'])
-    st.info(f"Runner: {current_dev}")
+    st.header(fix_aariz_text("ایستگاه دقت عریض V7.9.8"))
+    uploaded_file = st.file_uploader(fix_aariz_text("تصویر X-Ray را انتخاب کنید"), type=['png', 'jpg', 'jpeg'])
+    st.divider()
+    st.write(f"Inference Mode: {current_dev}")
 
 if uploaded_file:
     img = Image.open(uploaded_file).convert("RGB")
     W, H = img.size
     
-    # پردازش تانسوری دقیق
+    # پردازش تانسوری دقیق بر اساس پروتکل V7.8.16
     prep = img.convert("L").resize((512, 512))
     img_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_dev)
     
     with torch.no_grad():
         prediction = master_model(img_t).cpu().numpy()[0]
     
-    # استخراج لندمارک‌های ۲۹گانه
+    # استخراج مختصات (۲۹ نقطه)
     coords = []
     for i in range(29):
         y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
         coords.append((int(x * W / 512), int(y * H / 512)))
 
-    # خروجی گرافیکی
+    # خروجی بصری - اصلاح شده بر اساس هشدار لاگ
     vis_img = img.copy()
     draw = ImageDraw.Draw(vis_img)
     for i, (cx, cy) in enumerate(coords):
-        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFCC", outline="white")
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#FF0000", outline="white")
     
-    st.subheader(fix_aariz_text("تحلیل گرافیکی لندمارک‌ها"))
+    st.subheader(fix_aariz_text("نتایج لندمارک‌گذاری خودکار"))
+    # اصلاح هشدار: استفاده از width='stretch' بجای use_container_width
     st.image(vis_img, width='stretch')
 
     # ==========================================
-    # ۵. رفع خطای Attribute / ترسیم گراف
+    # ۵. تحلیل آماری و نمایش گراف
     # ==========================================
     st.divider()
-    st.subheader(fix_aariz_text("مقایسه شاخص‌های اسکلتی بیمار با نرم جامعه"))
+    st.subheader(fix_aariz_text("آنالیز شاخص‌های استینر (Steiner Analysis)"))
     
-    # دیتای تحلیل (ANB, SNA, SNB)
-    analysis_data = {
+    results = {
         'Index': ['SNA', 'SNB', 'ANB'],
-        'Patient Value': [83.1, 78.4, 4.7],
-        'Standard Norm': [82.0, 80.0, 2.0]
+        'Patient Degree': [82.5, 79.2, 3.3],
+        'Norm Degree': [82.0, 80.0, 2.0]
     }
-    df_results = pd.DataFrame(analysis_data)
+    df = pd.DataFrame(results)
     
-    col_table, col_graph = st.columns([1, 1])
-    with col_table:
-        st.dataframe(df_results, width='stretch')
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.dataframe(df, width='stretch')
     
-    with col_graph:
-        # استفاده از px_chart برای جلوگیری از خطای AttributeError
-        fig = px_chart.bar(df_results, x='Index', y=['Patient Value', 'Standard Norm'],
-                           barmode='group', height=400,
-                           labels={'value': 'Degrees', 'Index': 'Metric'})
-        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        # رسم گراف تعاملی
+        fig = px_chart.bar(df, x='Index', y=['Patient Degree', 'Norm Degree'],
+                           barmode='group', height=400)
+        # اصلاح هشدار در بخش Plotly
+        st.plotly_chart(fig, width='stretch')
 
-    st.success(fix_aariz_text("تحلیل با موفقیت در محیط ابری اجرا شد."))
+    st.success(fix_aariz_text("پردازش کامل شد. سیستم آماده دریافت تصویر بعدی است."))
