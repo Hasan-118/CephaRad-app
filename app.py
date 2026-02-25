@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر طبق دستور) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,7 +38,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. بارگذاری مدل‌ها و پیش‌بینی هوشمند (با تفکیک مناطق متخصص) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -64,13 +64,22 @@ def run_precise_prediction(img_pil, models, device):
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
     with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), 
-                  int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
+    
+    # نقاط تخصصی آموزش دیده در مدل‌های دوم و سوم
+    ANT_IDX = [10, 14, 9, 5, 28, 20] 
+    POST_IDX = [7, 11, 12, 15]
+    
+    coords = {}
+    for i in range(29):
+        # انتخاب مدل بر اساس ناحیه آناتومیک
+        heatmap = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
+        idx = np.unravel_index(np.argmax(heatmap), (512, 512))
+        coords[i] = [int((idx[1] - px) / ratio), int((idx[0] - py) / ratio)]
+    
     gc.collect(); return coords
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.22", layout="wide")
+# --- ۳. رابط کاربری (UI) و مدیریت وضعیت ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.23", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -78,7 +87,7 @@ if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.0001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
@@ -98,8 +107,10 @@ if uploaded_file and len(models) == 3:
         left, top = max(0, min(int(l_pos[0]-sz_m//2), W-sz_m)), max(0, min(int(l_pos[1]-sz_m//2), H-sz_m))
         mag_crop = raw_img.crop((left, top, left+sz_m, top+sz_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3)
-        mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        # نشانه مرکزی برای تنظیم دقیق
+        mag_draw.line((190, 200, 210, 200), fill="red", width=2)
+        mag_draw.line((200, 190, 200, 210), fill="red", width=2)
+        
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{st.session_state.click_version}")
         if res_mag and isinstance(res_mag, dict):
             new_c = [int(left + (res_mag["x"] * sz_m / 400)), int(top + (res_mag["y"] * sz_m / 400))]
@@ -110,21 +121,17 @@ if uploaded_file and len(models) == 3:
         st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # خطوط آنالیز
-        lines_cfg = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
-        for p1, p2, clr in lines_cfg:
+        # ترسیم خطوط آنالیز بالینی
+        analysis_lines = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
+        for p1, p2, clr in analysis_lines:
             if p1 in l and p2 in l: draw.line([tuple(l[p1]), tuple(l[p2])], fill=clr, width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            
-            # رندر متن با رعایت مقیاس انتخابی کاربر
-            f_size = int(12 * text_scale)
-            try:
-                draw.text((pos[0]+r+5, pos[1]-r), landmark_names[i], fill=color)
-            except: pass
+            # نمایش نام لندمارک با ابعاد داینامیک
+            draw.text((pos[0]+r+5, pos[1]-r), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main and isinstance(res_main, dict):
@@ -132,9 +139,10 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. بخش محاسبات (رفع خطای TypeError) ---
+    # --- ۴. محاسبات پیشرفته و گزارش نهایی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
+        """محاسبه زاویه بین ۳ نقطه یا بین دو خط (۴ نقطه)"""
         if p4 is None:
             v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
         else:
@@ -142,10 +150,16 @@ if uploaded_file and len(models) == 3:
         n = np.linalg.norm(v1)*np.linalg.norm(v2)
         return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1e-6), -1, 1))), 2)
 
+    def dist_to_line(p, l1, l2):
+        """محاسبه فاصله یک نقطه از یک خط (برای آنالیزهای عمودی)"""
+        p3, l1_3, l2_3 = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
+        return round(np.linalg.norm(np.cross(l2_3-l1_3, l1_3-p3)) / (np.linalg.norm(l2_3-l1_3) + 1e-6) * pixel_size, 2)
+
     l = st.session_state.lms
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
+    # آنالیز مک‌نامارا (تفاضل طول فک بالا و پایین)
     diff_mcnamara = round((np.linalg.norm(np.array(l[12])-np.array(l[13])) - np.linalg.norm(np.array(l[12])-np.array(l[0]))) * pixel_size, 2)
     
     st.header(f"📑 گزارش تحلیلی Aariz")
@@ -161,8 +175,9 @@ if uploaded_file and len(models) == 3:
         st.subheader("👄 بافت نرم و رشد")
         fma_desc = "Vertical" if fma > 30 else "Horizontal" if fma < 20 else "Normal"
         st.warning(f"**Growth Pattern:** {fma_desc} ({fma}°)")
-        if st.button("📄 تولید گزارش نهایی"):
-            st.success("گزارش آماده است.")
-            st.code(f"Aariz Report\nANB: {anb}\nFMA: {fma}\nMcNamara: {diff_mcnamara}")
+        
+        if st.button("📄 تولید گزارش نهایی و کد آنالیز"):
+            st.success("گزارش با موفقیت ایجاد شد.")
+            st.code(f"Aariz Precise Report\n---\nANB: {anb}\nFMA: {fma}\nMcNamara: {diff_mcnamara}mm\nPattern: {fma_desc}")
 
     gc.collect()
