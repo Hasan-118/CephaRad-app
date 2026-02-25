@@ -5,21 +5,21 @@ import torch.nn as nn
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw
 import pandas as pd
-from fpdf import FPDF, XPos, YPos
+import plotly.express as px
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. موتور گرافیکی و متون RTL
+# ۱. پیکربندی و استایلینگ (Streamlit 2026 Ready)
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.90", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.0", layout="wide")
 
-def aariz_fix_text(text):
+def fix_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (دست‌نخورده)
+# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -38,106 +38,97 @@ class CephaUNet(nn.Module):
     def __init__(self, in_channels=1, out_channels=29, features=[64, 128, 256, 512]):
         super(CephaUNet, self).__init__()
         self.ups, self.downs = nn.ModuleList(), nn.ModuleList()
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.pool = nn.MaxPool2d(2, 2)
         for feature in features:
             self.downs.append(DoubleConv(in_channels, feature))
             in_channels = feature
         for feature in reversed(features):
-            self.ups.append(nn.ConvTranspose2d(feature*2, feature, kernel_size=2, stride=2))
+            self.ups.append(nn.ConvTranspose2d(feature*2, feature, 2, 2))
             self.ups.append(DoubleConv(feature*2, feature))
         self.bottleneck = DoubleConv(features[-1], features[-1]*2)
-        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+        self.final_conv = nn.Conv2d(features[0], out_channels, 1)
 
     def forward(self, x):
-        skip_connections = []
+        skips = []
         for down in self.downs:
             x = down(x)
-            skip_connections.append(x)
+            skips.append(x)
             x = self.pool(x)
         x = self.bottleneck(x)
-        skip_connections = skip_connections[::-1]
-        for idx in range(0, len(self.ups), 2):
-            x = self.ups[idx](x)
-            skip_connection = skip_connections[idx//2]
-            if x.shape != skip_connection.shape:
-                x = TF.resize(x, size=skip_connection.shape[2:])
-            x = self.ups[idx+1](torch.cat((skip_connection, x), dim=1))
+        skips = skips[::-1]
+        for i in range(0, len(self.ups), 2):
+            x = self.ups[i](x)
+            skip = skips[i//2]
+            if x.shape != skip.shape: x = TF.resize(x, skip.shape[2:])
+            x = self.ups[i+1](torch.cat((skip, x), 1))
         return self.final_conv(x)
 
 # ==========================================
-# ۳. بارگذاری هوشمند مدل در محیط Cloud
+# ۳. بارگذاری هوشمند و پردازش
 # ==========================================
 @st.cache_resource
-def load_aariz_engine():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CephaUNet(in_channels=1, out_channels=29).to(device)
-    model.eval()
-    return model, device
+def load_gold_model():
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mdl = CephaUNet().to(dev)
+    mdl.eval()
+    return mdl, dev
 
-engine, device = load_aariz_engine()
+model, device = load_gold_model()
 
 # ==========================================
-# ۴. رابط کاربری و نمایش گراف‌ها
+# ۴. رابط کاربری (UI)
 # ==========================================
-with st.sidebar:
-    st.title(aariz_fix_text("ایستگاه دقت عریض"))
-    p_ref = st.text_input("Patient ID", "CEPHA-2026-X")
-    uploaded_file = st.file_uploader("Upload Radiograph", type=['png', 'jpg', 'jpeg'])
-    st.divider()
-    st.write(f"System: {device}")
+st.sidebar.title(fix_text("پنل مدیریتی عریض"))
+uploaded_file = st.sidebar.file_uploader(fix_text("انتخاب تصویر سفالومتری"), type=['png', 'jpg'])
 
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
-    W, H = img.size
+    raw_img = Image.open(uploaded_file).convert("RGB")
+    W, H = raw_img.size
     
-    # پیش‌بینی لندمارک‌ها (بدون تغییر در منطق V7.8.16)
-    prep = img.convert("L").resize((512, 512))
-    input_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(device)
+    # پردازش تصویر مطابق پارامترهای مرجع
+    processed = raw_img.convert("L").resize((512, 512))
+    tensor_in = torch.from_numpy(np.array(processed)/255.0).unsqueeze(0).unsqueeze(0).float().to(device)
     
     with torch.no_grad():
-        output = engine(input_t).cpu().numpy()[0]
+        pred = model(tensor_in).cpu().numpy()[0]
     
-    # استخراج مختصات
+    # استخراج ۲۹ نقطه لندمارک
     points = []
     for i in range(29):
-        y, x = np.unravel_index(output[i].argmax(), output[i].shape)
+        y, x = np.unravel_index(pred[i].argmax(), pred[i].shape)
         points.append((int(x * W / 512), int(y * H / 512)))
 
-    # رسم بصری
-    canvas = img.copy()
-    draw = ImageDraw.Draw(canvas)
+    # رسم گرافیکی روی تصویر
+    draw_img = raw_img.copy()
+    overlay = ImageDraw.Draw(draw_img)
     for i, (px, py) in enumerate(points):
-        draw.ellipse([px-4, py-4, px+4, py+4], fill="#00FF00", outline="white")
-        draw.text((px+8, py-8), str(i), fill="yellow")
+        overlay.ellipse([px-3, py-3, px+3, py+3], fill="red", outline="white")
+    
+    st.image(draw_img, caption="Aariz Automated Detection", width='stretch')
 
-    st.subheader(f"✅ {aariz_fix_text('تحلیل هوشمند با موفقیت انجام شد')}")
-    # استفاده از استاندارد جدید ۲۰۲۶
-    st.image(canvas, width='stretch')
-
-    # بخش تحلیل Steiner و نمودارها
-    results = {"Index": ["SNA", "SNB", "ANB"], "Value": [82.0, 79.0, 3.0], "Norm": [82.0, 80.0, 2.0]}
-    df = pd.DataFrame(results)
-
+    # ==========================================
+    # ۵. نمایش گراف‌ها و تحلیل (جدید)
+    # ==========================================
     st.divider()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write(f"### 📊 {aariz_fix_text('جدول محاسباتی')}")
+    st.subheader(fix_text("گراف مقایسه‌ای شاخص‌های اسکلتی (Steiner Analysis)"))
+    
+    # داده‌های نمونه (در نسخه نهایی از توابع هندسی جایگزین می‌شود)
+    data = {
+        'Metric': ['SNA', 'SNB', 'ANB'],
+        'Patient': [84.2, 78.5, 5.7],
+        'Norm': [82.0, 80.0, 2.0]
+    }
+    df = pd.DataFrame(data)
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        # نمایش جدول با فرمت جدید
         st.dataframe(df, width='stretch')
     
-    with c2:
-        st.write(f"### 📈 {aariz_fix_text('گراف وضعیت ناهنجاری')}")
-        st.bar_chart(df.set_index("Index")["Value"])
+    with col2:
+        # گراف تعاملی برای نمایش در گوشی و سیستم
+        fig = px.bar(df, x='Metric', y=['Patient', 'Norm'], barmode='group',
+                     color_discrete_map={'Patient': '#FF4B4B', 'Norm': '#1F77B4'})
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ==========================================
-    # ۵. گزارش‌گیری PDF (استاندارد XPos/YPos)
-    # ==========================================
-    if st.button(aariz_fix_text("دانلود گزارش بالینی")):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("helvetica", "B", 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.90 Report", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(10)
-        pdf.set_font("helvetica", "", 12)
-        pdf.cell(0, 10, f"Patient ID: {p_ref}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        
-        st.download_button("Get PDF", bytes(pdf.output()), f"Report_{p_ref}.pdf")
+    st.success(f"Analysis Complete. Device used: {device}")
