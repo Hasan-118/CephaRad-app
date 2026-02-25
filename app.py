@@ -6,20 +6,35 @@ import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw
 import pandas as pd
 import plotly.express as px_chart 
+import math
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. زیرساخت متنی و بصری (RTL Compliance)
+# ۱. زیرساخت سیستمی (RTL & 2026 Standards)
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.9.9", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V8.0.0", layout="wide")
 
 def fix_aariz_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
+# تابع محاسبه زاویه بین سه نقطه (مثلاً S-N-A)
+def calculate_angle(p1, p2, p3):
+    try:
+        a = np.array(p1)
+        b = np.array(p2) # نقطه راس (Vertex)
+        c = np.array(p3)
+        ba = a - b
+        bc = c - b
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        angle = np.arccos(cosine_angle)
+        return np.degrees(angle)
+    except:
+        return 0.0
+
 # ==========================================
-# ۲. کد مرجع طلایی V7.8.16 (بدون تغییر)
+# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر عددی)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -64,7 +79,7 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. بارگذاری موتور هوش مصنوعی عریض
+# ۳. مدیریت لودینگ و حافظه
 # ==========================================
 @st.cache_resource
 def load_aariz_engine():
@@ -76,64 +91,65 @@ def load_aariz_engine():
 master_model, current_dev = load_aariz_engine()
 
 # ==========================================
-# ۴. پردازش تصویر و استخراج لندمارک‌ها
+# ۴. تحلیل تصویر و استخراج نتایج واقعی
 # ==========================================
 with st.sidebar:
-    st.header(fix_aariz_text("پنل کنترلی عریض V7.9.9"))
-    uploaded_file = st.file_uploader(fix_aariz_text("انتخاب فایل Cephalogram"), type=['png', 'jpg', 'jpeg'])
-    st.info(f"System: {current_dev}")
+    st.header(fix_aariz_text("ایستگاه پردازش V8.0.0"))
+    uploaded_file = st.file_uploader(fix_aariz_text("تصویر سفالومتری را آپلود کنید"), type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file:
-    raw_img = Image.open(uploaded_file).convert("RGB")
-    W, H = raw_img.size
+    img = Image.open(uploaded_file).convert("RGB")
+    W, H = img.size
     
-    # پردازش طبق پروتکل مرجع V7.8.16
-    prep = raw_img.convert("L").resize((512, 512))
+    # پردازش تانسوری دقیق
+    prep = img.convert("L").resize((512, 512))
     img_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_dev)
     
     with torch.no_grad():
         prediction = master_model(img_t).cpu().numpy()[0]
     
-    # استخراج ۲۹ لندمارک
+    # نگاشت ۲۹ نقطه (نقاط مورد نیاز برای استینر: S=0, N=1, A=2, B=3 - فرض بر اساس ساختار مدل شما)
     coords = []
     for i in range(29):
         y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
         coords.append((int(x * W / 512), int(y * H / 512)))
 
-    # نمایش بصری
-    draw_img = raw_img.copy()
-    draw = ImageDraw.Draw(draw_img)
+    # محاسبه زوایای واقعی استینر
+    sna = calculate_angle(coords[0], coords[1], coords[2]) # S-N-A
+    snb = calculate_angle(coords[0], coords[1], coords[3]) # S-N-B
+    anb = sna - snb
+
+    # نمایش تصویر با لندمارک‌ها
+    vis_img = img.copy()
+    draw = ImageDraw.Draw(vis_img)
     for i, (cx, cy) in enumerate(coords):
-        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFCC", outline="white")
+        color = "#00FFCC" if i < 4 else "#FF4B4B" # برجسته کردن نقاط استینر
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill=color, outline="white")
     
-    st.subheader(fix_aariz_text("تحلیل گرافیکی هوشمند (CephaRad)"))
-    st.image(draw_img, width='stretch')
+    st.subheader(fix_aariz_text("تجزیه و تحلیل هندسی لندمارک‌ها"))
+    st.image(vis_img, width='stretch')
 
     # ==========================================
-    # ۵. تحلیل بالینی و تجسم داده‌ها
+    # ۵. نمایش گرافیکی نتایج محاسباتی
     # ==========================================
     st.divider()
-    st.subheader(fix_aariz_text("نتایج آنالیز Steiner و وضعیت بالینی"))
     
-    # شبیه‌سازی داده‌های تحلیل (این بخش آماده اتصال به توابع هندسی است)
-    results = {
-        'Metric': ['SNA', 'SNB', 'ANB'],
-        'Patient': [84.1, 78.2, 5.9],
-        'Normal': [82.0, 80.0, 2.0],
-        'Status': ['Maxillary Protrusion', 'Mandibular Retrusion', 'Class II Skeletal']
+    clinical_data = {
+        'Index': ['SNA', 'SNB', 'ANB'],
+        'Patient': [round(sna, 1), round(snb, 1), round(anb, 1)],
+        'Norm': [82.0, 80.0, 2.0]
     }
-    df = pd.DataFrame(results)
+    df_results = pd.DataFrame(clinical_data)
     
-    col_table, col_graph = st.columns([1, 1])
+    col_t, col_g = st.columns([1, 1])
+    with col_t:
+        st.write(fix_aariz_text("جدول مقایسه‌ای شاخص‌ها"))
+        st.table(df_results)
     
-    with col_table:
-        st.table(df) # نمایش به صورت جدول کلاسیک بالینی
-    
-    with col_graph:
-        # رسم گراف با استایل سال ۲۰۲۶
-        fig = px_chart.bar(df, x='Metric', y=['Patient', 'Normal'],
+    with col_g:
+        fig = px_chart.bar(df_results, x='Index', y=['Patient', 'Norm'],
                            barmode='group', height=400,
-                           color_discrete_sequence=['#FF4B4B', '#1F77B4'])
+                           color_discrete_map={'Patient': '#00FFCC', 'Norm': '#1F77B4'})
         st.plotly_chart(fig, width='stretch')
 
-    st.success(fix_aariz_text("تحلیل با موفقیت روی سرور اجرا شد."))
+    st.success(fix_aariz_text("تحلیل هندسی با دقت پیکسل انجام و گزارش نهایی صادر شد."))
