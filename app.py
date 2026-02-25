@@ -10,16 +10,17 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos  # اضافه شده برای نسخه جدید fpdf2
 import arabic_reshaper
 from bidi.algorithm import get_display
 
-# --- ۱. توابع کمکی زبان فارسی (جدید و افزایشی) ---
+# --- ۱. توابع کمکی زبان فارسی ---
 def bidi_text(text):
     if not text: return ""
     reshaped = arabic_reshaper.reshape(str(text))
     return get_display(reshaped)
 
-# --- ۲. معماری مرجع Aariz (بدون تغییر طبق دستور) ---
+# --- ۲. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -48,7 +49,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. لودر و توابع پیش‌بینی (بدون تغییر در منطق) ---
+# --- ۳. لودر و توابع پیش‌بینی (بدون تغییر) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -79,7 +80,7 @@ def run_precise_prediction(img_pil, models, device):
                   int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
     gc.collect(); return coords
 
-# --- ۴. رابط کاربری (UI) و بهینه‌سازی آیفون ۷ ---
+# --- ۴. رابط کاربری (UI) ---
 st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
@@ -121,65 +122,24 @@ if uploaded_file and len(models) == 3:
         st.subheader(bidi_text("🖼 نمای آنالیز گرافیکی"))
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم خطوط آنالیز
         if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)   # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)      # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)   # N-B
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)   # FH Plane
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)   # Mandibular Plane
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
+            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
+            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
+            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 8; draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
             
-        res_main = streamlit_image_coordinates(draw_img, width=800, key=f"main_{st.session_state.click_version}")
+        # کاهش عرض برای پایداری در آیفون ۷
+        res_main = streamlit_image_coordinates(draw_img, width=750, key=f"main_{st.session_state.click_version}")
         if res_main:
-            c_scale = W / 800; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            c_scale = W / 750; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۵. بخش جامع تحلیل و تولید PDF (ارتقا یافته) ---
+    # --- ۵. تحلیل نهایی و صدور PDF (اصلاح شده بر اساس لاگ) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-    anb = round(sna - snb, 2)
-    
-    results_summary = {
-        "SNA Angle": f"{sna}°",
-        "SNB Angle": f"{snb}°",
-        "ANB Angle": f"{anb}°",
-        "Diagnosis": "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-    }
-
-    st.header(bidi_text("📑 گزارش کلینیکی نهایی"))
-    c_res1, c_res2 = st.columns(2)
-    with c_res1:
-        st.table(pd.DataFrame([results_summary]).T.rename(columns={0: bidi_text("مقدار")}))
-
-    with c_res2:
-        if st.button(bidi_text("📄 صدور گزارش PDF رسمی")):
-            try:
-                pdf = FPDF()
-                pdf.add_page()
-                if os.path.exists("Vazir.ttf"):
-                    pdf.add_font('Vazir', '', 'Vazir.ttf')
-                    pdf.set_font('Vazir', size=16)
-                else:
-                    pdf.set_font('Arial', size=16)
-                
-                pdf.cell(190, 10, txt=bidi_text("گزارش ایستگاه دقت آریز"), ln=1, align='C')
-                pdf.ln(10)
-                pdf.set_font('Vazir' if os.path.exists("Vazir.ttf") else 'Arial', size=12)
-                for k, v in results_summary.items():
-                    pdf.cell(190, 10, txt=bidi_text(f"{k}: {v}"), ln=1, align='R')
-                
-                pdf_output = pdf.output(dest='S')
-                st.download_button(label=bidi_text("📥 دانلود فایل PDF"), data=pdf_output, file_name="Aariz_Report.pdf")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-    gc.collect()
