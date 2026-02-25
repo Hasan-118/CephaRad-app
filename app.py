@@ -13,7 +13,18 @@ import plotly.express as px_chart
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر - طبق دستور) ---
+# ==========================================
+# ۱. زیرساخت متون و تنظیمات سیستمی (RTL)
+# ==========================================
+st.set_page_config(page_title="Aariz Precision Station V8.2.1", layout="wide")
+
+def fix_text(t):
+    if not t: return ""
+    return get_display(reshape(str(t)))
+
+# ==========================================
+# ۲. معماری مرجع Aariz (بدون تغییر عددی)
+# ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -42,7 +53,9 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (مرجع) ---
+# ==========================================
+# ۳. مدیریت بارگذاری مدل‌ها و پیش‌بینی
+# ==========================================
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -74,11 +87,9 @@ def run_precise_prediction(img_pil, models, device):
                   int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
     gc.collect(); return coords
 
-# --- ۳. رابط کاربری (UI) با حفظ ساختار مرجع ---
-st.set_page_config(page_title="Aariz Precision Station V8.1.0", layout="wide")
-
-def fix_text(t): return get_display(reshape(str(t)))
-
+# ==========================================
+# ۴. رابط کاربری و تنظیمات اصلی
+# ==========================================
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -117,7 +128,7 @@ if uploaded_file and len(models) == 3:
         st.subheader(fix_text("🖼 نمای گرافیکی و خطوط آنالیز"))
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم خطوط آنالیز مرجع
+        # خطوط آنالیز مرجع
         line_defs = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink")]
         for p1, p2, clr in line_defs:
             if p1 in l and p2 in l: draw.line([tuple(l[p1]), tuple(l[p2])], fill=clr, width=3)
@@ -133,23 +144,36 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. تحلیل محاسباتی و تجسم داده‌ها (افزایشی) ---
+    # ==========================================
+    # ۵. تحلیل محاسباتی و گزارش نهایی
+    # ==========================================
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
+    def dist_to_line(p, l1, l2):
+        p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
+        return np.linalg.norm(np.cross(l2_3d-l1_3d, l1_3d-p3d)) / (np.linalg.norm(l2_3d-l1_3d) + 1e-6)
+
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     anb = round(sna - snb, 2)
+    co_a, co_gn = np.linalg.norm(np.array(l[12])-np.array(l[0]))*pixel_size, np.linalg.norm(np.array(l[12])-np.array(l[13]))*pixel_size
+    diff_mc = round(co_gn - co_a, 2)
     
     st.header(fix_text(f"📑 گزارش تحلیلی عریض ({gender})"))
     
-    df_plot = pd.DataFrame({'Metric': ['SNA', 'SNB', 'ANB'], 'Value': [sna, snb, anb], 'Norm': [82, 80, 2]})
     c_tab, c_fig = st.columns([1, 1.5])
     with c_tab:
+        df_plot = pd.DataFrame({'Metric': ['SNA', 'SNB', 'ANB'], 'Value': [sna, snb, anb], 'Norm': [82, 80, 2]})
         st.table(df_plot)
         diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-        st.info(f"Diagnosis: {diag}")
+        st.info(f"Diagnosis: {diag} | Mc-Diff: {diff_mc}mm")
     with c_fig:
         fig = px_chart.bar(df_plot, x='Metric', y=['Value', 'Norm'], barmode='group', height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
+
+    if st.sidebar.button("🖨 " + fix_text("تولید فایل گزارش")):
+        st.components.v1.html(f"<h3>Aariz Report</h3><p>Diagnosis: {diag}</p><button onclick='window.print()'>Print</button>", height=150)
+    
+    gc.collect()
