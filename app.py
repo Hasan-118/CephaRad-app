@@ -11,7 +11,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF 
 from fpdf.enums import XPos, YPos
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر عددی - Gold Standard) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -40,7 +40,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. لودر و توابع پیش‌بینی هوشمند (تطبیق با سه مدل) ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -57,7 +57,7 @@ def load_aariz_models():
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
             m.eval(); loaded_models.append(m)
-        except: pass
+        except Exception: pass
     return loaded_models, device
 
 def run_precise_prediction(img_pil, models, device):
@@ -65,26 +65,34 @@ def run_precise_prediction(img_pil, models, device):
     nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    
+    with torch.no_grad(): 
+        outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), 
-                  int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
-    gc.collect(); return coords
+    coords = {}
+    for i in range(29):
+        # منطق تفکیک نواحی تخصصی بین ۳ مدل
+        source = outs[1] if i in ANT_IDX else (outs[2] if i in POST_IDX else outs[0])
+        idx = np.unravel_index(np.argmax(source[i]), (512, 512))
+        coords[i] = [int((idx[1] - px) / ratio), int((idx[0] - py) / ratio)]
+    
+    del outs; gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.24", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.25", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-st.sidebar.header("📏 تنظیمات بیمار")
+st.sidebar.header("📏 تنظیمات آنالیز")
 p_name = st.sidebar.text_input("Patient Name:", "Aariz_Patient")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+gender = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+text_scale = st.sidebar.slider("🔤 ابعاد متون:", 1, 10, 3)
 
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر (Cephalogram):", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
@@ -92,16 +100,16 @@ if uploaded_file and len(models) == 3:
         st.session_state.lms = run_precise_prediction(raw_img, models, device)
         st.session_state.file_id = uploaded_file.name
 
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 لندمارک فعال برای جابجایی:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
-        st.subheader("🔍 Micro-Adjustment")
+        st.subheader("🔍 میکرومتر دیجیتال")
         l_pos = st.session_state.lms[target_idx]; size_m = 180 
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
         mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        mag_draw.line((190, 200, 210, 200), fill="red", width=2); mag_draw.line((200, 190, 200, 210), fill="red", width=2)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
             scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
@@ -109,27 +117,21 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 ترسیم آنالیز و لندمارک‌ها")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
+        
+        # ترسیم خطوط آناتومیک
         if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27, 12, 13]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)
-            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2)
-            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2)
+            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
+            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)   # E-Line
+            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2)    # Co-A
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 10 if i == target_idx else 6
-            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            name_text = landmark_names[i]
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+            r = 8 if i == target_idx else 5
+            draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
+            draw.text((pos[0]+12, pos[1]-12), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -137,53 +139,44 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. بخش تحلیل و تفسیر (محاسبات بهینه شده) ---
+    # --- ۴. محاسبات بالینی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(float(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1)))), 2)
+        v1 = np.array(p1)-np.array(p2)
+        v2 = np.array(p3)-np.array(p2) if p4 is None else np.array(p4)-np.array(p3)
+        norm = np.linalg.norm(v1)*np.linalg.norm(v2)
+        return round(float(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(norm if norm>0 else 1), -1, 1)))), 2)
 
     def dist_to_line(p, l1, l2):
-        # تبدیل به فضای سه بعدی برای سازگاری با NumPy 2.0
-        p_v = np.array([p[0], p[1], 0]); l1_v = np.array([l1[0], l1[1], 0]); l2_v = np.array([l2[0], l2[1], 0])
+        p_v, l1_v, l2_v = np.array([p[0], p[1], 0]), np.array([l1[0], l1[1], 0]), np.array([l2[0], l2[1], 0])
         return np.linalg.norm(np.cross(l2_v-l1_v, l1_v-p_v)) / (np.linalg.norm(l2_v-l1_v) + 1e-6)
 
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-    anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
-    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
-    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
-    diff_mcnamara = round(float(co_gn - co_a), 2)
-    dist_ls = round(float(dist_to_line(l[25], l[8], l[27]) * pixel_size), 2)
-    dist_li = round(float(dist_to_line(l[24], l[8], l[27]) * pixel_size), 2)
+    sna = get_ang(l[10], l[4], l[0]); snb = get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
+    diff_mcnamara = round(float((np.linalg.norm(np.array(l[12])-np.array(l[13])) - np.linalg.norm(np.array(l[12])-np.array(l[0]))) * pixel_size), 2)
 
-    st.header(f"📑 گزارش و تفسیر بالینی ({gender})")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("🦷 تحلیل اسکلتال")
+    st.header(f"📑 گزارش کلینیکال")
+    c_res1, c_res2 = st.columns(2)
+    with c_res1:
         st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
-        st.metric("McNamara Difference", f"{diff_mcnamara} mm", "Normal: 25-30mm")
         diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
         st.info(f"**تشخیص اسکلتال:** {diag}")
+    with c_res2:
+        st.metric("McNamara Diff", f"{diff_mcnamara} mm", "Ref: 25-30mm")
 
-    with c2:
-        st.subheader("👄 زیبایی و بافت نرم")
-        st.write(f"• فاصله لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• فاصله لب پایین تا خط E: **{dist_li} mm**")
-        fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal Growth"
-        st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
-
-    # --- ۵. خروجی PDF (رفع باگ StreamlitAPIException) ---
-    if st.button("📄 تولید و دانلود PDF گزارش"):
+    # --- ۵. خروجی PDF امن ---
+    if st.button("📄 صدور گزارش نهایی PDF"):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("helvetica", "B", size=16)
-        pdf.cell(200, 10, text="Aariz Precision Station - Clinical Report", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+        pdf.set_font("helvetica", "B", 16)
+        pdf.cell(0, 10, text="Aariz Precision Report", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
         pdf.set_font("helvetica", size=12)
-        pdf.cell(200, 10, text=f"Patient: {p_name} | Diagnosis: {diag}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
-        pdf.cell(200, 10, text=f"ANB: {anb} | FMA: {fma} | McNamara: {diff_mcnamara}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+        pdf.cell(0, 10, text=f"Patient: {p_name} | Gender: {gender}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, text=f"ANB: {anb} | Diagnosis: {diag} | McNamara: {diff_mcnamara}mm", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
-        # تبدیل bytearray به bytes برای سازگاری با استریم‌لیت
-        pdf_bytes = bytes(pdf.output())
-        st.download_button("📥 دانلود نهایی PDF", data=pdf_bytes, file_name=f"{p_name}_report.pdf", mime="application/pdf")
+        # تبدیل خروجی به بایت برای جلوگیری از خطای Streamlit Cloud
+        pdf_data = bytes(pdf.output())
+        st.download_button("📥 دانلود فایل PDF", data=pdf_data, file_name=f"{p_name}_Aariz.pdf", mime="application/pdf")
+
+
 
 gc.collect()
