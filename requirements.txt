@@ -13,3 +13,5 @@ arabic-reshaper
 python-bidi
 streamlit-image-coordinates==0.2.2
 fpdf2
+importlib-metadata==6.11.0
+rich==13.9.4
