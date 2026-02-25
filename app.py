@@ -9,9 +9,9 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF 
-import base64
+from fpdf.enums import XPos, YPos
 
-# --- ۱. معماری مرجع Aariz (حفاظت شده - V7.8.16) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر طبق پروتکل V7.8.16) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -40,7 +40,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و پیش‌بینی هوشمند (بر اساس مدل‌های سه‌گانه) ---
+# --- ۲. لودر و پیش‌بینی هوشمند ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -71,16 +71,16 @@ def run_precise_prediction(img_pil, models, device):
                   int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
     gc.collect(); return coords
 
-# --- ۳. رابط کاربری (UI) و تنظیمات بیمار ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.20", layout="wide")
+# --- ۳. رابط کاربری (UI) ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.21", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
 st.sidebar.header("📏 تنظیمات بیمار")
-p_name = st.sidebar.text_input("نام بیمار (فقط انگلیسی):", "Patient_001")
-gender_raw = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+p_name = st.sidebar.text_input("نام بیمار (English):", "Patient_001")
+gender_raw = st.sidebar.radio("جنسیت:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 
@@ -109,16 +109,13 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم خطوط آنالیز پایه (V7.8.20)
-        if all(k in l for k in [10, 4, 0, 2, 15, 5, 14, 3, 8, 27]):
+        if all(k in l for k in [10, 4, 0, 2, 15, 5, 8, 27]):
             draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3) # SN
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)   # NA
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2) # NB
             draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3) # FH
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)   # E-Line
+            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3) # E-Line
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
@@ -131,82 +128,73 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات آنالیز (V7.8.16) ---
+    # --- ۴. محاسبات ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1 = np.array(p1)-np.array(p2); v2 = np.array(p3)-np.array(p2) if p4 is None else np.array(p4)-np.array(p3)
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-
-    def dist_to_line(p, l1, l2):
-        p3, l1_3, l2_3 = np.append(p,0), np.append(l1,0), np.append(l2,0)
-        return np.linalg.norm(np.cross(l2_3-l1_3, l1_3-p3)) / (np.linalg.norm(l2_3-l1_3) + 1e-6)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     anb = round(sna - snb, 2); fma = get_ang(l[15], l[5], l[14], l[3])
     co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 2)
     co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 2)
     diff_mcnamara = round(co_gn - co_a, 2)
-    dist_ls = round(dist_to_line(l[25], l[8], l[27]) * pixel_size, 2)
-    dist_li = round(dist_to_line(l[24], l[8], l[27]) * pixel_size, 2)
     uit_sn = get_ang(l[10], l[4], l[21], l[20]); lit_mp = get_ang(l[14], l[3], l[23], l[17])
-
     diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-    fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal Growth"
 
-    # --- ۵. گزارش دهی و تولید PDF ایمن (V7.8.20) ---
-    st.header("📑 گزارش و تفسیر بالینی")
-    c_res1, c_res2 = st.columns(2)
-    with c_res1:
-        st.metric("ANB Angle", f"{anb} deg", f"SNA: {sna} / SNB: {snb}")
-        st.metric("McNamara Diff", f"{diff_mcnamara} mm")
-    with c_res2:
-        st.metric("U1 to SN", f"{uit_sn} deg")
-        st.metric("IMPA (L1-MP)", f"{lit_mp} deg")
+    # --- ۵. گزارش دهی نهایی (V7.8.21 - Fixed PDF) ---
+    st.header("📑 گزارش نهایی")
+    c1, c2 = st.columns(2)
+    with c1: st.metric("ANB Angle", f"{anb} deg", f"SNA: {sna} / SNB: {snb}")
+    with c2: st.metric("McNamara Diff", f"{diff_mcnamara} mm")
 
     def create_pdf_report():
         pdf = FPDF(orientation="P", unit="mm", format="A4")
         pdf.add_page()
         pdf.set_font("Helvetica", size=16, style="B")
-        pdf.cell(0, 15, txt="Aariz Precision Station - Clinical Report", ln=True, align='C')
+        # تغییر پارامتر txt به text و ln به سیستم جدید مختصات
+        pdf.cell(0, 15, text="Aariz Precision Station - Clinical Report", 
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
         
-        # تبدیل هوشمند متغیرها برای جلوگیری از خطای یونیکد
         safe_gender = "Male" if "آقا" in gender_raw else "Female"
         pdf.set_font("Helvetica", size=10)
-        pdf.cell(0, 10, txt=f"Patient ID: {p_name} | Gender: {safe_gender}", ln=True, align='C')
+        pdf.cell(0, 10, text=f"Patient: {p_name} | Gender: {safe_gender}", 
+                 new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
         pdf.ln(5)
         
         pdf.set_font("Helvetica", size=10, style="B")
         pdf.set_fill_color(240, 240, 240)
-        pdf.cell(50, 10, "Parameter", 1, 0, 'C', True)
-        pdf.cell(40, 10, "Value", 1, 0, 'C', True)
-        pdf.cell(100, 10, "Clinical Interpretation", 1, 1, 'C', True)
+        pdf.cell(60, 10, "Parameter", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align='C', fill=True)
+        pdf.cell(40, 10, "Value", border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align='C', fill=True)
+        pdf.cell(90, 10, "Diagnosis", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C', fill=True)
         
         pdf.set_font("Helvetica", size=10)
-        results = [
+        table_data = [
+            ("ANB Angle", f"{anb} deg", diag),
             ("SNA Angle", f"{sna} deg", "Maxilla Relation"),
             ("SNB Angle", f"{snb} deg", "Mandible Relation"),
-            ("ANB Angle", f"{anb} deg", diag),
-            ("FMA Angle", f"{fma} deg", fma_desc),
             ("McNamara Diff", f"{diff_mcnamara} mm", "Skeletal Balance"),
-            ("U1 to SN", f"{uit_sn} deg", "Upper Incisor Position"),
-            ("IMPA (L1-MP)", f"{lit_mp} deg", "Lower Incisor Position")
+            ("U1 to SN", f"{uit_sn} deg", "Upper Proclination"),
+            ("IMPA (L1-MP)", f"{lit_mp} deg", "Lower Proclination")
         ]
         
-        for name, val, interp in results:
-            pdf.cell(50, 10, name, 1)
-            pdf.cell(40, 10, val, 1)
-            pdf.cell(100, 10, interp, 1)
-            pdf.ln()
+        for p, v, d in table_data:
+            pdf.cell(60, 10, p, border=1)
+            pdf.cell(40, 10, v, border=1)
+            pdf.cell(90, 10, d, border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
         return pdf.output()
 
     try:
-        pdf_bytes = create_pdf_report()
+        report_data = create_pdf_report()
         st.download_button(
-            label="📥 دانلود گزارش PDF",
-            data=bytes(pdf_bytes),
-            file_name=f"Aariz_Report_{p_name}.pdf",
+            label="📥 دانلود PDF بدون خطا",
+            data=bytes(report_data),
+            file_name=f"Report_{p_name}.pdf",
             mime="application/pdf"
         )
     except Exception as e:
-        st.error(f"خطا در تولید PDF: {str(e)}")
+        st.error(f"Error: {e}")
+
+# پاکسازی حافظه در هر اجرا
+gc.collect()
