@@ -5,6 +5,7 @@ import numpy as np
 import os
 import gdown
 import gc
+import io
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -46,7 +47,6 @@ def load_aariz_models():
         'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
         'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
-    # تغییر به CPU برای پایداری در Streamlit Cloud طبق مرجع شما
     device = torch.device("cpu"); loaded_models = []
     for f, fid in model_ids.items():
         if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
@@ -71,7 +71,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.19", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -87,8 +87,7 @@ uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتر
 if uploaded_file and len(models) == 3:
     raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
     if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.initial_lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy()
+        st.session_state.lms = run_precise_prediction(raw_img, models, device)
         st.session_state.file_id = uploaded_file.name
 
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
@@ -96,54 +95,40 @@ if uploaded_file and len(models) == 3:
     col1, col2 = st.columns([1.2, 2.5])
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 180 
-        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        l_pos = st.session_state.lms[target_idx]; sz_m = 180 
+        left, top = max(0, min(int(l_pos[0]-sz_m//2), W-sz_m)), max(0, min(int(l_pos[1]-sz_m//2), H-sz_m))
+        mag_crop = raw_img.crop((left, top, left+sz_m, top+sz_m)).resize((400, 400), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
-        # کراس‌هیر قرمز برای تنظیم دقیق
         mag_draw.line((180, 200, 220, 200), fill="red", width=3)
         mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{st.session_state.click_version}")
+        if res_mag and isinstance(res_mag, dict):
+            new_c = [int(left + (res_mag["x"] * sz_m / 400)), int(top + (res_mag["y"] * sz_m / 400))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # ترسیم دقیق خطوط بر اساس منطق مرجع شما
-        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27, 12, 13]):
-            draw.line([tuple(l[10]), tuple(l[4])], fill="yellow", width=3)   # S-N
-            draw.line([tuple(l[4]), tuple(l[0])], fill="cyan", width=2)     # N-A
-            draw.line([tuple(l[4]), tuple(l[2])], fill="magenta", width=2)  # N-B
-            draw.line([tuple(l[15]), tuple(l[5])], fill="orange", width=3)  # FH Plane
-            draw.line([tuple(l[14]), tuple(l[3])], fill="purple", width=3)  # Mandibular Plane
-            draw.line([tuple(l[8]), tuple(l[27])], fill="pink", width=3)    # E-Line
-            draw.line([tuple(l[12]), tuple(l[0])], fill="red", width=2)     # Co-A
-            draw.line([tuple(l[12]), tuple(l[13])], fill="lime", width=2)   # Co-Gn
+        # ترسیم خطوط آنالیز
+        lines = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
+        for p1, p2, clr in lines:
+            if p1 in l and p2 in l: draw.line([tuple(l[p1]), tuple(l[p2])], fill=clr, width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            
-            # بخش رندر نام لندمارک با Text Scale (دقیقاً مشابه مرجع)
-            name_text = landmark_names[i]
-            temp_txt = Image.new('RGBA', (len(name_text)*8, 12), (0,0,0,0))
-            ImageDraw.Draw(temp_txt).text((0, 0), name_text, fill=color)
-            scaled_txt = temp_txt.resize((int(temp_txt.width*text_scale), int(temp_txt.height*text_scale)), Image.NEAREST)
-            draw_img.paste(scaled_txt, (pos[0]+r+10, pos[1]-r), scaled_txt)
+            draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
 
-        # اصلاح عرض تصویر برای رفع Warning
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            c_scale = W / 850; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+        if res_main and isinstance(res_main, dict):
+            m_c = [int(res_main["x"] * W / 850), int(res_main["y"] * H / 850)]
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. بخش جامع تحلیل، تفسیر و طرح درمان ---
+    # --- ۴. بخش محاسبات و گزارش بالینی نهایی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -153,49 +138,28 @@ if uploaded_file and len(models) == 3:
         p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
         return np.linalg.norm(np.cross(l2_3d-l1_3d, l1_3d-p3d)) / (np.linalg.norm(l2_3d-l1_3d) + 1e-6)
 
+    l = st.session_state.lms
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
     anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
-    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
-    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
-    diff_mcnamara = round(co_gn - co_a, 2)
-    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-
-    st.header(f"📑 گزارش و تفسیر بالینی ({gender})")
+    diff_mcnamara = round((np.linalg.norm(np.array(l[12])-np.array(l[13])) - np.linalg.norm(np.array(l[12])-np.array(l[0]))) * pixel_size, 2)
+    
+    st.header(f"📑 گزارش تحلیلی Aariz")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("🦷 تحلیل اسکلتال و دندانی")
+        st.subheader("🦷 وضعیت فکی (Skeletal)")
         st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
-        st.metric("McNamara Difference", f"{diff_mcnamara} mm", "Normal: 25-30mm")
-        
+        st.metric("McNamara Diff", f"{diff_mcnamara} mm", "Target: 25-30mm")
         diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-        st.info(f"**تشخیص اسکلتال:** {diag}")
-        
-        st.subheader("💡 نقشه راه درمان (Roadmap)")
-        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 12:
-            st.error("🚨 ناهنجاری شدید فکی؛ نیاز به مشاوره جراحی فک و صورت (Orthognathic).")
-        else:
-            st.success("✅ ناهنجاری متوسط؛ قابل درمان با مکانوتراپی ارتودنسی و Camouflage.")
+        st.info(f"**Diagnosis:** {diag}")
 
     with c2:
-        st.subheader("👄 زیبایی و بافت نرم")
-        st.write(f"• فاصله لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• فاصله لب پایین تا خط E: **{dist_li} mm**")
+        st.subheader("👄 بافت نرم و رشد")
+        fma_desc = "Vertical" if fma > 30 else "Horizontal" if fma < 20 else "Normal"
+        st.warning(f"**Growth Pattern:** {fma_desc} ({fma}°)")
         
-        fma_desc = "Vertical Growth" if fma > 30 else "Horizontal Growth" if fma < 20 else "Normal Growth"
-        st.warning(f"**الگوی رشد:** {fma_desc} ({fma}°)")
+        if st.button("📄 تولید گزارش چاپی"):
+            st.success("گزارش آماده است.")
+            st.code(f"Aariz Report\nGender: {gender}\nDiagnosis: {diag}\nANB: {anb}\nMcNamara: {diff_mcnamara}mm")
 
-        if st.button("📄 دریافت PDF نهایی"):
-            pdf_html = f"""
-            <div style="direction: rtl; font-family: tahoma; border: 1px solid #ccc; padding: 15px;">
-                <h2 style="color: #007bff;">Aariz Clinical Report</h2>
-                <p><b>Diagnosis:</b> {diag}</p>
-                <p><b>ANB Angle:</b> {anb}°</p>
-                <p><b>McNamara Diff:</b> {diff_mcnamara} mm</p>
-                <button onclick="window.print()" style="padding: 10px; background: #28a745; color: white; border: none;">Print Report</button>
-            </div>
-            """
-            st.components.v1.html(pdf_html, height=250)
-    
     gc.collect()
