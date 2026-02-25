@@ -71,7 +71,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.19", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.25", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -120,6 +120,7 @@ if uploaded_file and len(models) == 3:
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
+            # رندر متن لندمارک با رعایت مقیاس انتخابی کاربر
             draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
@@ -132,7 +133,7 @@ if uploaded_file and len(models) == 3:
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1e-6), -1, 1))), 2)
     
     def dist_to_line(p, l1, l2):
         p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
@@ -163,4 +164,3 @@ if uploaded_file and len(models) == 3:
             st.code(f"Aariz Report\nGender: {gender}\nDiagnosis: {diag}\nANB: {anb}\nMcNamara: {diff_mcnamara}mm")
 
     gc.collect()
-
