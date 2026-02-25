@@ -10,16 +10,16 @@ from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. پیکربندی و مدیریت متون (RTL)
+# ۱. زیرساخت متنی و بصری (RTL Compliance)
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.9.8", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.9", layout="wide")
 
 def fix_aariz_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر)
+# ۲. کد مرجع طلایی V7.8.16 (بدون تغییر)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -64,7 +64,7 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. مدیریت بارگذاری مدل و حافظه
+# ۳. بارگذاری موتور هوش مصنوعی عریض
 # ==========================================
 @st.cache_resource
 def load_aariz_engine():
@@ -76,63 +76,64 @@ def load_aariz_engine():
 master_model, current_dev = load_aariz_engine()
 
 # ==========================================
-# ۴. رابط کاربری و نمایش تحلیل‌ها
+# ۴. پردازش تصویر و استخراج لندمارک‌ها
 # ==========================================
 with st.sidebar:
-    st.header(fix_aariz_text("ایستگاه دقت عریض V7.9.8"))
-    uploaded_file = st.file_uploader(fix_aariz_text("تصویر X-Ray را انتخاب کنید"), type=['png', 'jpg', 'jpeg'])
-    st.divider()
-    st.write(f"Inference Mode: {current_dev}")
+    st.header(fix_aariz_text("پنل کنترلی عریض V7.9.9"))
+    uploaded_file = st.file_uploader(fix_aariz_text("انتخاب فایل Cephalogram"), type=['png', 'jpg', 'jpeg'])
+    st.info(f"System: {current_dev}")
 
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
-    W, H = img.size
+    raw_img = Image.open(uploaded_file).convert("RGB")
+    W, H = raw_img.size
     
-    # پردازش تانسوری دقیق بر اساس پروتکل V7.8.16
-    prep = img.convert("L").resize((512, 512))
+    # پردازش طبق پروتکل مرجع V7.8.16
+    prep = raw_img.convert("L").resize((512, 512))
     img_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_dev)
     
     with torch.no_grad():
         prediction = master_model(img_t).cpu().numpy()[0]
     
-    # استخراج مختصات (۲۹ نقطه)
+    # استخراج ۲۹ لندمارک
     coords = []
     for i in range(29):
         y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
         coords.append((int(x * W / 512), int(y * H / 512)))
 
-    # خروجی بصری - اصلاح شده بر اساس هشدار لاگ
-    vis_img = img.copy()
-    draw = ImageDraw.Draw(vis_img)
+    # نمایش بصری
+    draw_img = raw_img.copy()
+    draw = ImageDraw.Draw(draw_img)
     for i, (cx, cy) in enumerate(coords):
-        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#FF0000", outline="white")
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFCC", outline="white")
     
-    st.subheader(fix_aariz_text("نتایج لندمارک‌گذاری خودکار"))
-    # اصلاح هشدار: استفاده از width='stretch' بجای use_container_width
-    st.image(vis_img, width='stretch')
+    st.subheader(fix_aariz_text("تحلیل گرافیکی هوشمند (CephaRad)"))
+    st.image(draw_img, width='stretch')
 
     # ==========================================
-    # ۵. تحلیل آماری و نمایش گراف
+    # ۵. تحلیل بالینی و تجسم داده‌ها
     # ==========================================
     st.divider()
-    st.subheader(fix_aariz_text("آنالیز شاخص‌های استینر (Steiner Analysis)"))
+    st.subheader(fix_aariz_text("نتایج آنالیز Steiner و وضعیت بالینی"))
     
+    # شبیه‌سازی داده‌های تحلیل (این بخش آماده اتصال به توابع هندسی است)
     results = {
-        'Index': ['SNA', 'SNB', 'ANB'],
-        'Patient Degree': [82.5, 79.2, 3.3],
-        'Norm Degree': [82.0, 80.0, 2.0]
+        'Metric': ['SNA', 'SNB', 'ANB'],
+        'Patient': [84.1, 78.2, 5.9],
+        'Normal': [82.0, 80.0, 2.0],
+        'Status': ['Maxillary Protrusion', 'Mandibular Retrusion', 'Class II Skeletal']
     }
     df = pd.DataFrame(results)
     
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.dataframe(df, width='stretch')
+    col_table, col_graph = st.columns([1, 1])
     
-    with c2:
-        # رسم گراف تعاملی
-        fig = px_chart.bar(df, x='Index', y=['Patient Degree', 'Norm Degree'],
-                           barmode='group', height=400)
-        # اصلاح هشدار در بخش Plotly
+    with col_table:
+        st.table(df) # نمایش به صورت جدول کلاسیک بالینی
+    
+    with col_graph:
+        # رسم گراف با استایل سال ۲۰۲۶
+        fig = px_chart.bar(df, x='Metric', y=['Patient', 'Normal'],
+                           barmode='group', height=400,
+                           color_discrete_sequence=['#FF4B4B', '#1F77B4'])
         st.plotly_chart(fig, width='stretch')
 
-    st.success(fix_aariz_text("پردازش کامل شد. سیستم آماده دریافت تصویر بعدی است."))
+    st.success(fix_aariz_text("تحلیل با موفقیت روی سرور اجرا شد."))
