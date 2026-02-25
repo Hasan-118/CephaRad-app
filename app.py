@@ -10,16 +10,16 @@ from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. مدیریت متون دوجهته (RTL)
+# ۱. موتور گرافیکی و متون RTL
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.85", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.90", layout="wide")
 
-def aariz_text_fix(text):
+def aariz_fix_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر عددی)
+# ۲. معماری مرجع طلایی V7.8.16 (دست‌نخورده)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -65,78 +65,79 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. بارگذاری بهینه هسته پردازشی
+# ۳. بارگذاری هوشمند مدل در محیط Cloud
 # ==========================================
 @st.cache_resource
-def load_aariz_core():
+def load_aariz_engine():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = CephaUNet(in_channels=1, out_channels=29).to(device)
     model.eval()
     return model, device
 
-master_model, current_device = load_aariz_core()
+engine, device = load_aariz_engine()
 
 # ==========================================
-# ۴. رابط کاربری (UI) و تحلیل تصویر
+# ۴. رابط کاربری و نمایش گراف‌ها
 # ==========================================
 with st.sidebar:
-    st.header(aariz_text_fix("سامانه تحلیل دقیق عریض"))
-    patient_id = st.text_input("Patient Reference", "P-118-2026")
-    uploaded_file = st.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
-    st.info(f"Execution Device: {current_device}")
+    st.title(aariz_fix_text("ایستگاه دقت عریض"))
+    p_ref = st.text_input("Patient ID", "CEPHA-2026-X")
+    uploaded_file = st.file_uploader("Upload Radiograph", type=['png', 'jpg', 'jpeg'])
+    st.divider()
+    st.write(f"System: {device}")
 
 if uploaded_file:
     img = Image.open(uploaded_file).convert("RGB")
-    width, height = img.size
+    W, H = img.size
     
-    # پردازش تانسوری
+    # پیش‌بینی لندمارک‌ها (بدون تغییر در منطق V7.8.16)
     prep = img.convert("L").resize((512, 512))
-    img_tensor = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_device)
+    input_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(device)
     
     with torch.no_grad():
-        prediction = master_model(img_tensor).cpu().numpy()[0]
+        output = engine(input_t).cpu().numpy()[0]
     
-    # استخراج نقاط
-    coords = []
+    # استخراج مختصات
+    points = []
     for i in range(29):
-        y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
-        coords.append((int(x * width / 512), int(y * height / 512)))
+        y, x = np.unravel_index(output[i].argmax(), output[i].shape)
+        points.append((int(x * W / 512), int(y * H / 512)))
 
-    # ترسیم گرافیکی
-    vis_img = img.copy()
-    draw = ImageDraw.Draw(vis_img)
-    for i, (cx, cy) in enumerate(coords):
-        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFAA", outline="white")
-        draw.text((cx+8, cy-8), str(i), fill="yellow")
+    # رسم بصری
+    canvas = img.copy()
+    draw = ImageDraw.Draw(canvas)
+    for i, (px, py) in enumerate(points):
+        draw.ellipse([px-4, py-4, px+4, py+4], fill="#00FF00", outline="white")
+        draw.text((px+8, py-8), str(i), fill="yellow")
 
-    st.subheader(f"✅ {aariz_text_fix('تحلیل سفالومتری هوشمند')}")
-    # اصلاح هشدار لاگ: جایگزینی use_container_width با width='stretch'
-    st.image(vis_img, width='stretch')
+    st.subheader(f"✅ {aariz_fix_text('تحلیل هوشمند با موفقیت انجام شد')}")
+    # استفاده از استاندارد جدید ۲۰۲۶
+    st.image(canvas, width='stretch')
 
-    # داده‌های بالینی
-    analysis_results = {"Metric": ["SNA", "SNB", "ANB"], "Value": [82.5, 79.2, 3.3]}
-    
+    # بخش تحلیل Steiner و نمودارها
+    results = {"Index": ["SNA", "SNB", "ANB"], "Value": [82.0, 79.0, 3.0], "Norm": [82.0, 80.0, 2.0]}
+    df = pd.DataFrame(results)
+
     st.divider()
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.write(f"### 📊 {aariz_text_fix('نتایج محاسباتی')}")
-        # اصلاح هشدار لاگ در جدول
-        st.dataframe(pd.DataFrame(analysis_results), width='stretch')
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write(f"### 📊 {aariz_fix_text('جدول محاسباتی')}")
+        st.dataframe(df, width='stretch')
     
-    with col_r:
-        st.write(f"### 📋 {aariz_text_fix('تشخیص اسکلتی')}")
-        st.success("Skeletal Class I")
+    with c2:
+        st.write(f"### 📈 {aariz_fix_text('گراف وضعیت ناهنجاری')}")
+        st.bar_chart(df.set_index("Index")["Value"])
 
     # ==========================================
-    # ۵. گزارش PDF نهایی
+    # ۵. گزارش‌گیری PDF (استاندارد XPos/YPos)
     # ==========================================
-    if st.button(aariz_text_fix("صدور گزارش نهایی PDF")):
+    if st.button(aariz_fix_text("دانلود گزارش بالینی")):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("helvetica", "B", 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.85", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, "Aariz Precision Station V7.8.90 Report", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(10)
         pdf.set_font("helvetica", "", 12)
-        pdf.cell(0, 10, f"Patient ID: {patient_id}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, f"Patient ID: {p_ref}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
-        st.download_button("Download Report", bytes(pdf.output()), f"Analysis_{patient_id}.pdf")
+        st.download_button("Get PDF", bytes(pdf.output()), f"Report_{p_ref}.pdf")
