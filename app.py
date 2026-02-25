@@ -5,7 +5,8 @@ import numpy as np
 import os
 import gdown
 import gc
-from PIL import Image, ImageDraw, ImageFont
+import io
+from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -70,7 +71,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.22", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.19", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -107,24 +108,19 @@ if uploaded_file and len(models) == 3:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
+        st.subheader("🖼 نمای گرافیکی")
         draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         
-        # خطوط آنالیز
-        lines_cfg = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
-        for p1, p2, clr in lines_cfg:
+        # ترسیم خطوط آنالیز
+        lines = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
+        for p1, p2, clr in lines:
             if p1 in l and p2 in l: draw.line([tuple(l[p1]), tuple(l[p2])], fill=clr, width=3)
 
         for i, pos in l.items():
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 10 if i == target_idx else 6
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            
-            # رندر متن با رعایت مقیاس انتخابی کاربر
-            f_size = int(12 * text_scale)
-            try:
-                draw.text((pos[0]+r+5, pos[1]-r), landmark_names[i], fill=color)
-            except: pass
+            draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
         if res_main and isinstance(res_main, dict):
@@ -132,15 +128,15 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. بخش محاسبات (رفع خطای TypeError) ---
+    # --- ۴. بخش محاسبات و گزارش بالینی نهایی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
-        if p4 is None:
-            v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
-        else:
-            v1, v2 = np.array(p2)-np.array(p1), np.array(p4)-np.array(p3)
-        n = np.linalg.norm(v1)*np.linalg.norm(v2)
-        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1e-6), -1, 1))), 2)
+        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
+        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+    
+    def dist_to_line(p, l1, l2):
+        p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
+        return np.linalg.norm(np.cross(l2_3d-l1_3d, l1_3d-p3d)) / (np.linalg.norm(l2_3d-l1_3d) + 1e-6)
 
     l = st.session_state.lms
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
@@ -161,9 +157,10 @@ if uploaded_file and len(models) == 3:
         st.subheader("👄 بافت نرم و رشد")
         fma_desc = "Vertical" if fma > 30 else "Horizontal" if fma < 20 else "Normal"
         st.warning(f"**Growth Pattern:** {fma_desc} ({fma}°)")
-        if st.button("📄 تولید گزارش نهایی"):
+        
+        if st.button("📄 تولید گزارش چاپی"):
             st.success("گزارش آماده است.")
-            st.code(f"Aariz Report\nANB: {anb}\nFMA: {fma}\nMcNamara: {diff_mcnamara}")
+            st.code(f"Aariz Report\nGender: {gender}\nDiagnosis: {diag}\nANB: {anb}\nMcNamara: {diff_mcnamara}mm")
 
     gc.collect()
 
