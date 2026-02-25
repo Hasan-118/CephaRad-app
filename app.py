@@ -12,7 +12,7 @@ from bidi.algorithm import get_display
 # ==========================================
 # ۱. تنظیمات و توابع کمکی متن
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.60", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.65", layout="wide")
 
 def aariz_format_text(text):
     if not text: return ""
@@ -116,7 +116,7 @@ if uploaded_file:
     # اصلاح نمایش تصویر برای سال ۲۰۲۶
     st.image(vis_img, width='stretch')
 
-    # محاسبات بالینی (نمونه آنالیز)
+    # محاسبات بالینی (نمونه آنالیز استاینر)
     analysis_results = {"SNA": 82.1, "SNB": 78.9, "ANB": 3.2}
 
     st.divider()
@@ -143,7 +143,7 @@ if uploaded_file:
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("helvetica", "B", 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.60", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, "Aariz Precision Station V7.8.65", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(10)
         pdf.set_font("helvetica", "", 12)
         pdf.cell(0, 10, f"Patient: {patient_id}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
