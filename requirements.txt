@@ -1,12 +1,11 @@
-streamlit>=1.40.0
-torch>=2.5.0
-torchvision>=0.20.0
-numpy>=1.26.0,<2.0.0
+streamlit==1.32.0
+torch --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu
+numpy==1.26.4
+Pillow
 pandas
+gdown
 plotly
-fpdf2
+requests
 arabic-reshaper
 python-bidi
-gdown
-streamlit-image-coordinates
-Pillow
