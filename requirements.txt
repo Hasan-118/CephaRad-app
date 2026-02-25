@@ -2,7 +2,7 @@
 torch==2.0.1
 torchvision==0.15.2
 streamlit==1.28.0
-importlib-metadata<7.0  # این خط برای رفع تداخل اضافه شد
+importlib-metadata==6.11.0
 numpy==1.24.3
 Pillow
 pandas
@@ -11,5 +11,5 @@ plotly
 requests
 arabic-reshaper
 python-bidi
-streamlit-image-coordinates
+streamlit-image-coordinates==0.3.0
 fpdf2
