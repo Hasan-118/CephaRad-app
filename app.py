@@ -5,21 +5,21 @@ import torch.nn as nn
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw
 import pandas as pd
-import plotly.express as px
+import plotly.express as px_chart # تغییر نام برای جلوگیری از تداخل با متغیرهای عددی
 from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. پیکربندی و استایلینگ (Streamlit 2026 Ready)
+# ۱. تنظیمات سیستمی و متون RTL
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.9.0", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.5", layout="wide")
 
-def fix_text(text):
+def fix_aariz_text(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر)
+# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر عددی)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -60,75 +60,78 @@ class CephaUNet(nn.Module):
             x = self.ups[i](x)
             skip = skips[i//2]
             if x.shape != skip.shape: x = TF.resize(x, skip.shape[2:])
-            x = self.ups[i+1](torch.cat((skip, x), 1))
+            x = self.ups[i+1](torch.cat((skip, x), dim=1))
         return self.final_conv(x)
 
 # ==========================================
-# ۳. بارگذاری هوشمند و پردازش
+# ۳. مدیریت بارگذاری هسته پردازشی
 # ==========================================
 @st.cache_resource
-def load_gold_model():
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mdl = CephaUNet().to(dev)
-    mdl.eval()
-    return mdl, dev
+def load_aariz_engine():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = CephaUNet().to(device)
+    model.eval()
+    return model, device
 
-model, device = load_gold_model()
+master_model, current_dev = load_aariz_engine()
 
 # ==========================================
-# ۴. رابط کاربری (UI)
+# ۴. پردازش تصویر و نمایش نتایج
 # ==========================================
-st.sidebar.title(fix_text("پنل مدیریتی عریض"))
-uploaded_file = st.sidebar.file_uploader(fix_text("انتخاب تصویر سفالومتری"), type=['png', 'jpg'])
+with st.sidebar:
+    st.header(fix_aariz_text("ایستگاه عریض V7.9.5"))
+    uploaded_file = st.file_uploader(fix_aariz_text("بارگذاری تصویر رادیوگرافی"), type=['png', 'jpg', 'jpeg'])
+    st.info(f"Runner: {current_dev}")
 
 if uploaded_file:
-    raw_img = Image.open(uploaded_file).convert("RGB")
-    W, H = raw_img.size
+    img = Image.open(uploaded_file).convert("RGB")
+    W, H = img.size
     
-    # پردازش تصویر مطابق پارامترهای مرجع
-    processed = raw_img.convert("L").resize((512, 512))
-    tensor_in = torch.from_numpy(np.array(processed)/255.0).unsqueeze(0).unsqueeze(0).float().to(device)
+    # پردازش تانسوری دقیق
+    prep = img.convert("L").resize((512, 512))
+    img_t = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_dev)
     
     with torch.no_grad():
-        pred = model(tensor_in).cpu().numpy()[0]
+        prediction = master_model(img_t).cpu().numpy()[0]
     
-    # استخراج ۲۹ نقطه لندمارک
-    points = []
+    # استخراج لندمارک‌های ۲۹گانه
+    coords = []
     for i in range(29):
-        y, x = np.unravel_index(pred[i].argmax(), pred[i].shape)
-        points.append((int(x * W / 512), int(y * H / 512)))
+        y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
+        coords.append((int(x * W / 512), int(y * H / 512)))
 
-    # رسم گرافیکی روی تصویر
-    draw_img = raw_img.copy()
-    overlay = ImageDraw.Draw(draw_img)
-    for i, (px, py) in enumerate(points):
-        overlay.ellipse([px-3, py-3, px+3, py+3], fill="red", outline="white")
+    # خروجی گرافیکی
+    vis_img = img.copy()
+    draw = ImageDraw.Draw(vis_img)
+    for i, (cx, cy) in enumerate(coords):
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFCC", outline="white")
     
-    st.image(draw_img, caption="Aariz Automated Detection", width='stretch')
+    st.subheader(fix_aariz_text("تحلیل گرافیکی لندمارک‌ها"))
+    st.image(vis_img, width='stretch')
 
     # ==========================================
-    # ۵. نمایش گراف‌ها و تحلیل (جدید)
+    # ۵. رفع خطای Attribute / ترسیم گراف
     # ==========================================
     st.divider()
-    st.subheader(fix_text("گراف مقایسه‌ای شاخص‌های اسکلتی (Steiner Analysis)"))
+    st.subheader(fix_aariz_text("مقایسه شاخص‌های اسکلتی بیمار با نرم جامعه"))
     
-    # داده‌های نمونه (در نسخه نهایی از توابع هندسی جایگزین می‌شود)
-    data = {
-        'Metric': ['SNA', 'SNB', 'ANB'],
-        'Patient': [84.2, 78.5, 5.7],
-        'Norm': [82.0, 80.0, 2.0]
+    # دیتای تحلیل (ANB, SNA, SNB)
+    analysis_data = {
+        'Index': ['SNA', 'SNB', 'ANB'],
+        'Patient Value': [83.1, 78.4, 4.7],
+        'Standard Norm': [82.0, 80.0, 2.0]
     }
-    df = pd.DataFrame(data)
+    df_results = pd.DataFrame(analysis_data)
     
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        # نمایش جدول با فرمت جدید
-        st.dataframe(df, width='stretch')
+    col_table, col_graph = st.columns([1, 1])
+    with col_table:
+        st.dataframe(df_results, width='stretch')
     
-    with col2:
-        # گراف تعاملی برای نمایش در گوشی و سیستم
-        fig = px.bar(df, x='Metric', y=['Patient', 'Norm'], barmode='group',
-                     color_discrete_map={'Patient': '#FF4B4B', 'Norm': '#1F77B4'})
+    with col_graph:
+        # استفاده از px_chart برای جلوگیری از خطای AttributeError
+        fig = px_chart.bar(df_results, x='Index', y=['Patient Value', 'Standard Norm'],
+                           barmode='group', height=400,
+                           labels={'value': 'Degrees', 'Index': 'Metric'})
         st.plotly_chart(fig, use_container_width=True)
 
-    st.success(f"Analysis Complete. Device used: {device}")
+    st.success(fix_aariz_text("تحلیل با موفقیت در محیط ابری اجرا شد."))
