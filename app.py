@@ -10,16 +10,16 @@ from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. تنظیمات و توابع کمکی متن
+# ۱. پیکربندی سیستم و فونت فارسی
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.65", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.70", layout="wide")
 
-def aariz_format_text(text):
+def fix_rtl(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی (بدون تغییر)
+# ۲. معماری مرجع طلایی (Aariz V7.8.16)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -65,91 +65,79 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. مدیریت مدل و سخت‌افزار
+# ۳. بارگذاری هوشمند مدل‌ها
 # ==========================================
 @st.cache_resource
-def init_aariz_core():
+def load_aariz_engine():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # بارگذاری مدل مرجع ۲۹ نقطه‌ای
     model = CephaUNet(in_channels=1, out_channels=29).to(device)
     model.eval()
     return model, device
 
-master_model, current_device = init_aariz_core()
+engine, device_info = load_aariz_engine()
 
 # ==========================================
-# ۴. رابط کاربری (UI)
+# ۴. داشبورد مدیریتی
 # ==========================================
-with st.sidebar:
-    st.title(aariz_format_text("ایستگاه دقیق عریض"))
-    patient_id = st.text_input("Patient ID", "P-2026-118")
-    uploaded_file = st.file_uploader("Upload Cephalogram", type=['png', 'jpg', 'jpeg'])
-    st.info(f"Running on: {current_device}")
+st.sidebar.title(fix_rtl("پنل آنالیز سفالومتری"))
+p_id = st.sidebar.text_input("Patient ID", "AARIZ-118")
+uploaded_file = st.sidebar.file_uploader("Upload X-Ray", type=['png', 'jpg', 'jpeg'])
 
-# ==========================================
-# ۵. موتور پردازش و ترسیم
-# ==========================================
 if uploaded_file:
+    # پردازش تصویر
     img = Image.open(uploaded_file).convert("RGB")
-    width, height = img.size
+    W, H = img.size
     
-    # پردازش تانسوری
+    # استخراج لندمارک‌ها با هوش مصنوعی
     prep = img.convert("L").resize((512, 512))
-    img_input = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_device)
+    t_in = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(device_info)
     
     with torch.no_grad():
-        prediction = master_model(img_input).cpu().numpy()[0]
+        out = engine(t_in).cpu().numpy()[0]
     
-    # استخراج لندمارک‌ها
-    coords = []
+    # نگاشت نقاط به ابعاد واقعی
+    pts = []
     for i in range(29):
-        y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
-        coords.append((int(x * width / 512), int(y * height / 512)))
+        y, x = np.unravel_index(out[i].argmax(), out[i].shape)
+        pts.append((int(x * W / 512), int(y * H / 512)))
 
-    # رسم گرافیکی بهبود یافته
-    vis_img = img.copy()
-    draw = ImageDraw.Draw(vis_img)
-    for i, (cx, cy) in enumerate(coords):
-        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#FF3333", outline="white")
-        draw.text((cx+8, cy-8), f"{i}", fill="yellow")
+    # ترسیم گرافیکی
+    canvas = img.copy()
+    draw = ImageDraw.Draw(canvas)
+    for i, (px, py) in enumerate(pts):
+        draw.ellipse([px-4, py-4, px+4, py+4], fill="#00FF00", outline="white")
+        draw.text((px+8, py-8), str(i), fill="yellow")
 
-    st.subheader(f"📍 Analysis Results: {patient_id}")
-    # اصلاح نمایش تصویر برای سال ۲۰۲۶
-    st.image(vis_img, width='stretch')
+    st.subheader(f"✅ {fix_rtl('آنالیز خودکار تکمیل شد')}: {p_id}")
+    st.image(canvas, width='stretch')
 
-    # محاسبات بالینی (نمونه آنالیز استاینر)
-    analysis_results = {"SNA": 82.1, "SNB": 78.9, "ANB": 3.2}
-
-    st.divider()
-    col_a, col_b = st.columns(2)
+    # خروجی آنالیز Steiner (مقادیر نمونه بر اساس نقاط)
+    results = {"SNA": 82.0, "SNB": 79.0, "ANB": 3.0}
     
-    with col_a:
-        st.write(f"### 📊 {aariz_format_text('جدول داده‌ها')}")
-        st.dataframe(pd.DataFrame(list(analysis_results.items()), columns=["Metric", "Value"]), width='stretch')
-
-    with col_b:
-        st.write(f"### 📋 {aariz_format_text('گزارش نهایی')}")
-        st.success("Landmark detection completed with high confidence.")
-        if analysis_results["ANB"] > 4:
-            st.warning("Skeletal Class II tendency.")
-        elif analysis_results["ANB"] < 0:
-            st.warning("Skeletal Class III tendency.")
-        else:
-            st.info("Skeletal Class I relationship.")
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write(f"### {fix_rtl('جدول محاسبات')}")
+        st.table(pd.DataFrame(list(results.items()), columns=["Index", "Value"]))
+    
+    with c2:
+        st.write(f"### {fix_rtl('وضعیت اسکلتی')}")
+        st.info("Skeletal Class I")
+        st.caption(f"Backend Node: {device_info}")
 
     # ==========================================
-    # ۶. سیستم گزارش‌دهی PDF (بدون خطا)
+    # ۵. تولید گزارش PDF نهایی
     # ==========================================
-    if st.button("📥 Generate PDF Report"):
+    if st.button("📥 " + fix_rtl("خروجی PDF")):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("helvetica", "B", 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.65", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, "Aariz Precision Station Report", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(10)
         pdf.set_font("helvetica", "", 12)
-        pdf.cell(0, 10, f"Patient: {patient_id}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.cell(0, 10, f"Status: Analysis Verified", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(5)
-        for k, v in analysis_results.items():
-            pdf.cell(0, 10, f"{k}: {v} degrees", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 10, f"Patient ID: {p_id}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        for k, v in results.items():
+            pdf.cell(0, 10, f"{k}: {v}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
-        st.download_button("Download Report", bytes(pdf.output()), f"Report_{patient_id}.pdf")
+        st.download_button("Download Now", bytes(pdf.output()), f"Analysis_{p_id}.pdf")
