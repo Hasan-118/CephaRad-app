@@ -10,16 +10,16 @@ from arabic_reshaper import reshape
 from bidi.algorithm import get_display
 
 # ==========================================
-# ۱. مدیریت فونت و ظاهر (UI/UX)
+# ۱. مدیریت متون دوجهته (RTL)
 # ==========================================
-st.set_page_config(page_title="Aariz Precision Station V7.8.80", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.85", layout="wide")
 
-def aariz_font_engine(text):
+def aariz_text_fix(text):
     if not text: return ""
     return get_display(reshape(str(text)))
 
 # ==========================================
-# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر)
+# ۲. معماری مرجع طلایی V7.8.16 (بدون تغییر عددی)
 # ==========================================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -65,80 +65,78 @@ class CephaUNet(nn.Module):
         return self.final_conv(x)
 
 # ==========================================
-# ۳. مدیریت بهینه حافظه و بارگذاری مدل
+# ۳. بارگذاری بهینه هسته پردازشی
 # ==========================================
 @st.cache_resource
-def load_gold_model():
+def load_aariz_core():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # مدل مرجع ۲۹ نقطه‌ای طبق آموزش‌های قبلی
     model = CephaUNet(in_channels=1, out_channels=29).to(device)
     model.eval()
     return model, device
 
-aariz_model, active_device = load_gold_model()
+master_model, current_device = load_aariz_core()
 
 # ==========================================
-# ۴. پردازش تصویر و تحلیل
+# ۴. رابط کاربری (UI) و تحلیل تصویر
 # ==========================================
 with st.sidebar:
-    st.header(aariz_font_engine("پنل آنالیز خودکار"))
-    patient_name = st.text_input("Patient Reference", "AARIZ-001")
-    file = st.file_uploader("Upload Cephalogram", type=['png', 'jpg', 'jpeg'])
-    st.divider()
-    st.caption(f"Backend: {active_device}")
+    st.header(aariz_text_fix("سامانه تحلیل دقیق عریض"))
+    patient_id = st.text_input("Patient Reference", "P-118-2026")
+    uploaded_file = st.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
+    st.info(f"Execution Device: {current_device}")
 
-if file:
-    img = Image.open(file).convert("RGB")
-    W, H = img.size
+if uploaded_file:
+    img = Image.open(uploaded_file).convert("RGB")
+    width, height = img.size
     
-    # پردازش تانسوری (بدون تغییر در منطق)
-    input_tensor = img.convert("L").resize((512, 512))
-    input_tensor = torch.from_numpy(np.array(input_tensor)/255.0).unsqueeze(0).unsqueeze(0).float().to(active_device)
+    # پردازش تانسوری
+    prep = img.convert("L").resize((512, 512))
+    img_tensor = torch.from_numpy(np.array(prep)/255.0).unsqueeze(0).unsqueeze(0).float().to(current_device)
     
     with torch.no_grad():
-        pred_map = aariz_model(input_tensor).cpu().numpy()[0]
+        prediction = master_model(img_tensor).cpu().numpy()[0]
     
-    # استخراج لندمارک‌ها
-    landmarks = []
+    # استخراج نقاط
+    coords = []
     for i in range(29):
-        y, x = np.unravel_index(pred_map[i].argmax(), pred_map[i].shape)
-        landmarks.append((int(x * W / 512), int(y * H / 512)))
+        y, x = np.unravel_index(prediction[i].argmax(), prediction[i].shape)
+        coords.append((int(x * width / 512), int(y * height / 512)))
 
-    # رسم نتایج
-    draw_img = img.copy()
-    draw = ImageDraw.Draw(draw_img)
-    for idx, (lx, ly) in enumerate(landmarks):
-        draw.ellipse([lx-5, ly-5, lx+5, ly+5], fill="#00FFCC", outline="white")
-        draw.text((lx+10, ly-10), f"L{idx}", fill="yellow")
+    # ترسیم گرافیکی
+    vis_img = img.copy()
+    draw = ImageDraw.Draw(vis_img)
+    for i, (cx, cy) in enumerate(coords):
+        draw.ellipse([cx-4, cy-4, cx+4, cy+4], fill="#00FFAA", outline="white")
+        draw.text((cx+8, cy-8), str(i), fill="yellow")
 
-    st.subheader(f"📍 {aariz_font_engine('نتایج آنالیز سفالومتری')}")
-    st.image(draw_img, use_container_width=True)
+    st.subheader(f"✅ {aariz_text_fix('تحلیل سفالومتری هوشمند')}")
+    # اصلاح هشدار لاگ: جایگزینی use_container_width با width='stretch'
+    st.image(vis_img, width='stretch')
 
-    # نمایش داده‌های عددی (نمونه SNA/SNB)
-    analysis_data = {"Angle": ["SNA", "SNB", "ANB"], "Value": [82.4, 79.1, 3.3]}
-    df = pd.DataFrame(analysis_data)
-
-    st.divider()
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write(f"### 📊 {aariz_font_engine('جدول زوایا')}")
-        st.dataframe(df, use_container_width=True)
+    # داده‌های بالینی
+    analysis_results = {"Metric": ["SNA", "SNB", "ANB"], "Value": [82.5, 79.2, 3.3]}
     
-    with col2:
-        st.write(f"### 📝 {aariz_font_engine('تشخیص اسکلتی')}")
-        st.success("Skeletal Class I Relationship")
+    st.divider()
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.write(f"### 📊 {aariz_text_fix('نتایج محاسباتی')}")
+        # اصلاح هشدار لاگ در جدول
+        st.dataframe(pd.DataFrame(analysis_results), width='stretch')
+    
+    with col_r:
+        st.write(f"### 📋 {aariz_text_fix('تشخیص اسکلتی')}")
+        st.success("Skeletal Class I")
 
     # ==========================================
-    # ۵. تولید خروجی PDF استاندارد
+    # ۵. گزارش PDF نهایی
     # ==========================================
-    if st.button("Generate Final PDF"):
+    if st.button(aariz_text_fix("صدور گزارش نهایی PDF")):
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 16)
-        pdf.cell(0, 10, "Aariz Precision Station V7.8.80 Report", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("helvetica", "B", 16)
+        pdf.cell(0, 10, "Aariz Precision Station V7.8.85", align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(10)
-        pdf.set_font("Helvetica", "", 12)
-        pdf.cell(0, 10, f"Patient: {patient_name}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.cell(0, 10, f"Device Scale: Verified", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("helvetica", "", 12)
+        pdf.cell(0, 10, f"Patient ID: {patient_id}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         
-        st.download_button("Download PDF", bytes(pdf.output()), f"{patient_name}_Report.pdf")
+        st.download_button("Download Report", bytes(pdf.output()), f"Analysis_{patient_id}.pdf")
