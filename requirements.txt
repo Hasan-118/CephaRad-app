@@ -1,8 +1,8 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-streamlit
 torch
 torchvision
-numpy==1.26.4
+streamlit
+numpy
 Pillow
 pandas
 gdown
