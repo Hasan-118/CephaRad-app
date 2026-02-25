@@ -1,7 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 streamlit==1.32.0
-torch==2.2.1+cpu
-torchvision==0.17.1+cpu
+torch==2.10.0+cpu
+torchvision==0.25.0+cpu
 numpy==1.26.4
 Pillow
 pandas
