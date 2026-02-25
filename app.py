@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 from fpdf import FPDF
-from fpdf.enums import XPos, YPos  # اضافه شده برای نسخه جدید fpdf2
+from fpdf.enums import XPos, YPos
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -49,7 +49,7 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. لودر و توابع پیش‌بینی (بدون تغییر) ---
+# --- ۳. لودر و توابع پیش‌بینی ---
 @st.cache_resource
 def load_aariz_models():
     model_ids = {
@@ -81,7 +81,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect(); return coords
 
 # --- ۴. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.17", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -133,13 +133,62 @@ if uploaded_file and len(models) == 3:
             color = (255, 0, 0) if i == target_idx else (0, 255, 0)
             r = 8; draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white")
             
-        # کاهش عرض برای پایداری در آیفون ۷
         res_main = streamlit_image_coordinates(draw_img, width=750, key=f"main_{st.session_state.click_version}")
         if res_main:
             c_scale = W / 750; m_c = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۵. تحلیل نهایی و صدور PDF (اصلاح شده بر اساس لاگ) ---
+    # --- ۵. بخش محاسبات و صدور PDF ---
     st.divider()
+    
+    # اصلاح شده: تابع حالا دارای بدنه Indented است
     def get_ang(p1, p2, p3, p4=None):
+        v1 = np.array(p1) - np.array(p2)
+        v2 = np.array(p3) - np.array(p2) if p4 is None else np.array(p4) - np.array(p3)
+        norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+        if norm == 0: return 0.0
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1, v2) / norm, -1, 1))), 2)
+
+    sna = get_ang(l[10], l[4], l[0])
+    snb = get_ang(l[10], l[4], l[2])
+    anb = round(sna - snb, 2)
+    
+    results_summary = {
+        "SNA Angle": f"{sna}°",
+        "SNB Angle": f"{snb}°",
+        "ANB Angle": f"{anb}°",
+        "Skeletal Diagnosis": "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
+    }
+
+    st.header(bidi_text("📑 گزارش کلینیکی نهایی"))
+    c_res1, c_res2 = st.columns(2)
+    with c_res1:
+        st.table(pd.DataFrame([results_summary]).T.rename(columns={0: bidi_text("مقدار")}))
+
+    with c_res2:
+        if st.button(bidi_text("📄 صدور گزارش PDF رسمی")):
+            try:
+                pdf = FPDF()
+                pdf.add_page()
+                if os.path.exists("Vazir.ttf"):
+                    pdf.add_font('Vazir', '', 'Vazir.ttf')
+                    pdf.set_font('Vazir', size=16)
+                else:
+                    pdf.set_font('Arial', size=16)
+                
+                pdf.cell(190, 15, text=bidi_text("گزارش ایستگاه دقت آریز"), 
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+                pdf.ln(10)
+                
+                pdf.set_font('Vazir' if os.path.exists("Vazir.ttf") else 'Arial', size=12)
+                for k, v in results_summary.items():
+                    pdf.cell(190, 10, text=bidi_text(f"{k}: {v}"), 
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='R')
+                
+                pdf_output = pdf.output()
+                st.download_button(label=bidi_text("📥 دانلود فایل PDF"), data=pdf_output, file_name="Aariz_Report.pdf")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    gc.collect()
