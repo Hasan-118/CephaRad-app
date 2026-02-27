@@ -146,7 +146,11 @@ if uploaded_file and len(models) == 3:
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
     def dist_to_line(p, l1, l2):
-        return np.cross(l2-l1, l1-p) / (np.linalg.norm(l2-l1) + 1e-6)
+        # 
+        # تبدیل بردارها به ۳ بعدی برای سازگاری با NumPy 2.0
+        v1 = np.append(l2 - l1, 0)
+        v2 = np.append(p - l1, 0)
+        return np.linalg.norm(np.cross(v1, v2)) / (np.linalg.norm(l2 - l1) + 1e-6)
 
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
