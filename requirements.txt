@@ -1,8 +1,12 @@
+streamlit
 torch
 torchvision
-streamlit
+numpy
+Pillow
+pandas
+gdown
 streamlit-image-coordinates
 opencv-python-headless
-Pillow
-numpy
--
+arabic-reshaper
+python-bidi
+fpdf2
