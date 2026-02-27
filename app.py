@@ -9,10 +9,10 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. تنظیمات اولیه (باید اولین دستور باشد) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.35", layout="wide")
+# --- ۱. تنظیمات صفحه ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.40", layout="wide")
 
-# --- ۲. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -41,56 +41,73 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. رابط کاربری (Sidebar) ---
-st.sidebar.title("🛠 مرکز پردازش Aariz")
-st.sidebar.header("📏 تنظیمات بیمار")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+# --- ۳. رابط کاربری اصلی ---
+st.title("🦷 Aariz Precision Station V7.8.40")
 
-# --- ۴. توابع پردازشی (دانلود و لود مدل) ---
-def get_model_files():
+# این متغیرها را در session_state ذخیره می‌کنیم تا بین Rerun ها حفظ شوند
+if 'models_loaded' not in st.session_state: st.session_state.models_loaded = False
+if 'download_done' not in st.session_state: st.session_state.download_done = False
+
+# --- ۴. توابع مدیریت فایل (جداسازی شده) ---
+def get_model_map():
     return {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
         'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
 
-def check_and_download_models():
-    model_ids = get_model_files()
-    missing_files = []
+def download_models():
+    model_ids = get_model_map()
+    all_exists = True
     for f in model_ids.keys():
         if not os.path.exists(f):
-            missing_files.append(f)
+            all_exists = False
+            break
     
-    if missing_files:
-        st.sidebar.warning(f"در حال دانلود مدل‌ها: {', '.join(missing_files)}")
-        for f in missing_files:
-            gdown.download(f'https://drive.google.com/uc?id={model_ids[f]}', f, quiet=False)
-        st.sidebar.success("مدل‌ها با موفقیت دانلود شدند.")
+    if not all_exists:
+        st.sidebar.warning("⚠️ در حال دانلود مدل‌ها از سرور (این فرآیند ممکن است چند دقیقه طول بکشد)...")
+        for f, fid in model_ids.items():
+            if not os.path.exists(f):
+                gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
+        st.sidebar.success("✅ دانلود کامل شد. در حال بارگذاری...")
+        st.session_state.download_done = True
         st.rerun()
 
 @st.cache_resource
-def load_aariz_models():
+def load_models():
+    model_files = get_model_map().keys()
+    for f in model_files:
+        if not os.path.exists(f): return None
+    
     device = torch.device("cpu")
     loaded_models = []
-    files = get_model_files().keys()
-    
-    # اگر هنوز دانلود نشده‌اند، لود نکن
-    for f in files:
-        if not os.path.exists(f): return [], device
-
-    for f in files:
+    for f in model_files:
         m = CephaUNet(n_landmarks=29).to(device)
         ckpt = torch.load(f, map_location=device)
         state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
         m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
         m.eval()
         loaded_models.append(m)
-    return loaded_models, device
+    return loaded_models
 
-def run_precise_prediction(img_pil, models, device):
+# --- ۵. اجرای منطق اصلی برنامه ---
+download_models() # ابتدا بررسی دانلود
+models = load_models() # سپس لود کردن
+
+if models is None:
+    st.info("⌛ در حال آماده‌سازی اولیه سیستم...")
+    st.stop() # توقف اجرای بقیه کد تا دانلود تمام شود
+
+# سایدبار که حالا باید همیشه نمایش داده شود
+st.sidebar.title("🛠 مرکز پردازش Aariz")
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+
+# --- ۶. توابع پردازش تصویر (بدون تغییر) ---
+def run_precise_prediction(img_pil, models):
+    device = torch.device("cpu")
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
     nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
@@ -105,19 +122,17 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect()
     return coords
 
-# --- ۵. اجرای منطق اصلی ---
-check_and_download_models()
-models, device = load_aariz_models()
+# --- ۷. اجرای تحلیل ---
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-if uploaded_file and len(models) == 3:
+if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("Analyzing image..."):
-            st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models, device)
+        with st.spinner("🧠 در حال تحلیل تصویر توسط هوش مصنوعی Aariz..."):
+            st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
     raw_img = st.session_state.raw_img; W, H = raw_img.size
@@ -172,7 +187,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۶. محاسبات و گزارش جامع (کامل و بدون حذف) ---
+    # --- ۸. محاسبات و گزارش (بدون تغییر) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -205,8 +220,8 @@ if uploaded_file and len(models) == 3:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("👄 تحلیل بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
+        st.write(f"• لب بالا تا خط E: **{dist_li} mm**")
+        st.write(f"• لب پایین تا خط E: **{dist_ls} mm**")
         if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
         elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
 
