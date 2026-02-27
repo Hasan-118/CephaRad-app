@@ -4,17 +4,11 @@ import torch.nn as nn
 import numpy as np
 import os
 import gdown
-import gc
-import io
-import warnings
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# حذف هشدارهای سیستمی در لاگ
-warnings.filterwarnings("ignore")
-
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. ساختار مدل مرجع ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -29,7 +23,8 @@ class DoubleConv(nn.Module):
 class CephaUNet(nn.Module):
     def __init__(self, n_landmarks=29):
         super().__init__()
-        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.inc = DoubleConv(1, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
         self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
         self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
@@ -43,17 +38,19 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی ---
+# --- ۲. توابع کمکی ---
 @st.cache_resource
-def load_aariz_models():
+def load_aariz_system():
     model_ids = {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
         'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
-    device = torch.device("cpu"); loaded_models = []
+    device = torch.device("cpu")
+    loaded_models = []
     for f, fid in model_ids.items():
-        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
+        if not os.path.exists(f):
+            gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
         try:
             m = CephaUNet(n_landmarks=29).to(device)
             ckpt = torch.load(f, map_location=device)
@@ -63,107 +60,104 @@ def load_aariz_models():
         except: pass
     return loaded_models, device
 
-def run_precise_prediction(img_pil, models, device):
-    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {i: [int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[1] - px) / ratio), 
-                  int((np.unravel_index(np.argmax(outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])), (512,512))[0] - py) / ratio)] for i in range(29)}
-    gc.collect(); return coords
+def get_safe_magnifier(img, coord, size=120):
+    w, h = img.size
+    x, y = coord
+    left = max(0, min(int(x - size//2), w - size))
+    top = max(0, min(int(y - size//2), h - size))
+    crop = img.crop((left, top, left + size, top + size)).resize((400, 400), Image.LANCZOS)
+    draw = ImageDraw.Draw(crop)
+    draw.line((180, 200, 220, 200), fill="red", width=2)
+    draw.line((200, 180, 200, 220), fill="red", width=2)
+    return crop, (left, top)
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.26", layout="wide")
-models, device = load_aariz_models()
+# --- ۳. رابط کاربری اصلی ---
+st.set_page_config(page_title="Aariz Precision V3.8", layout="wide")
+models, device = load_aariz_system()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
-if "click_version" not in st.session_state: st.session_state.click_version = 0
-
-st.sidebar.header("📏 تنظیمات بیمار")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+# مقداردهی اولیه به ورژن کلیک
+if "click_version" not in st.session_state:
+    st.session_state.click_version = 0
 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
-    raw_img = Image.open(uploaded_file).convert("RGB"); W, H = raw_img.size
-    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.lms = run_precise_prediction(raw_img, models, device)
-        st.session_state.file_id = uploaded_file.name
-
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    raw_img = Image.open(uploaded_file).convert("RGB")
+    W, H = raw_img.size
     
-    col1, col2 = st.columns([1.2, 2.5])
+    if "lms" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
+        with st.spinner("AI Ensemble Analysis..."):
+            img_input = raw_img.convert('L').resize((512, 512), Image.LANCZOS)
+            t = transforms.ToTensor()(img_input).unsqueeze(0).to(device)
+            with torch.no_grad():
+                preds = [m(t)[0].cpu().numpy() for m in models]
+            
+            coords = {}
+            scale_x, scale_y = W / 512.0, H / 512.0
+            ANT_IDX = [1, 20, 21, 22, 24, 25, 26, 28] 
+            TMJ_IDX = [11, 12, 15, 16] 
+            
+            for i in range(29):
+                hm = preds[1][i] if i in ANT_IDX else (preds[2][i] if i in TMJ_IDX else preds[0][i])
+                y, x = np.unravel_index(np.argmax(hm), hm.shape)
+                coords[i] = [int(x * scale_x), int(y * scale_y)]
+            
+            st.session_state.lms = coords
+            st.session_state.file_id = uploaded_file.name
+
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+
+    col1, col2 = st.columns([1.2, 2])
+    
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; sz_m = 180 
-        left, top = max(0, min(int(l_pos[0]-sz_m//2), W-sz_m)), max(0, min(int(l_pos[1]-sz_m//2), H-sz_m))
-        mag_crop = raw_img.crop((left, top, left+sz_m, top+sz_m)).resize((400, 400), Image.LANCZOS)
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3)
-        mag_draw.line((200, 180, 200, 220), fill="red", width=3)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{st.session_state.click_version}")
-        if res_mag and isinstance(res_mag, dict):
-            new_c = [int(left + (res_mag["x"] * sz_m / 400)), int(top + (res_mag["y"] * sz_m / 400))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
+        mag_img, (off_x, off_y) = get_safe_magnifier(raw_img, st.session_state.lms[target_idx])
+        
+        # استفاده از ورژن کلیک در KEY برای ریست کردن ویجت بعد از هر جابجایی
+        mag_key = f"mag_{target_idx}_{st.session_state.click_version}"
+        res_mag = streamlit_image_coordinates(mag_img, key=mag_key)
+        
+        if res_mag:
+            scale = 120 / 400
+            new_x = int(off_x + (res_mag["x"] * scale))
+            new_y = int(off_y + (res_mag["y"] * scale))
+            
+            # فقط اگر واقعاً کلیک جدیدی دور از مرکز انجام شده باشد
+            if abs(new_x - st.session_state.lms[target_idx][0]) > 0 or abs(new_y - st.session_state.lms[target_idx][1]) > 0:
+                st.session_state.lms[target_idx] = [new_x, new_y]
+                st.session_state.click_version += 1 # تغییر ورژن برای ریست کردن ویجت در ران بعدی
+                st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
-        draw_img = raw_img.copy(); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        
-        # ترسیم خطوط آنالیز
-        lines = [(10,4,"yellow"), (4,0,"cyan"), (4,2,"magenta"), (15,5,"orange"), (14,3,"purple"), (8,27,"pink"), (12,0,"red"), (12,13,"lime")]
-        for p1, p2, clr in lines:
-            if p1 in l and p2 in l: draw.line([tuple(l[p1]), tuple(l[p2])], fill=clr, width=3)
-
+        st.subheader("🖼 Full View")
+        draw_img = raw_img.copy()
+        draw = ImageDraw.Draw(draw_img)
+        l = st.session_state.lms
         for i, pos in l.items():
-            color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 10 if i == target_idx else 6
+            color = "red" if i == target_idx else "#00FF00"
+            r = 15 if i == target_idx else 8
             draw.ellipse([pos[0]-r, pos[1]-r, pos[0]+r, pos[1]+r], fill=color, outline="white", width=2)
-            draw.text((pos[0]+r+10, pos[1]-r), landmark_names[i], fill=color)
-
-        res_main = streamlit_image_coordinates(draw_img, width=850, key=f"main_{st.session_state.click_version}")
-        if res_main and isinstance(res_main, dict):
-            m_c = [int(res_main["x"] * W / 850), int(res_main["y"] * H / 850)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
-
-    # --- ۴. بخش محاسبات و گزارش بالینی نهایی ---
-    st.divider()
-    def get_ang(p1, p2, p3, p4=None):
-        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1e-6), -1, 1))), 2)
-    
-    def dist_to_line(p, l1, l2):
-        p3d, l1_3d, l2_3d = np.append(p, 0), np.append(l1, 0), np.append(l2, 0)
-        return np.linalg.norm(np.cross(l2_3d-l1_3d, l1_3d-p3d)) / (np.linalg.norm(l2_3d-l1_3d) + 1e-6)
-
-    l = st.session_state.lms
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2])
-    anb = round(sna - snb, 2)
-    fma = get_ang(l[15], l[5], l[14], l[3])
-    diff_mcnamara = round((np.linalg.norm(np.array(l[12])-np.array(l[13])) - np.linalg.norm(np.array(l[12])-np.array(l[0]))) * pixel_size, 2)
-    
-    st.header(f"📑 گزارش تحلیلی Aariz")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("🦷 وضعیت فکی (Skeletal)")
-        st.metric("ANB Angle", f"{anb}°", f"SNA: {sna} / SNB: {snb}")
-        st.metric("McNamara Diff", f"{diff_mcnamara} mm", "Target: 25-30mm")
-        diag = "Class II" if anb > 4 else "Class III" if anb < 0 else "Class I"
-        st.info(f"**Diagnosis:** {diag}")
-
-    with c2:
-        st.subheader("👄 بافت نرم و رشد")
-        fma_desc = "Vertical" if fma > 30 else "Horizontal" if fma < 20 else "Normal"
-        st.warning(f"**Growth Pattern:** {fma_desc} ({fma}°)")
         
-        if st.button("📄 تولید گزارش چاپی"):
-            st.success("گزارش آماده است.")
-            st.code(f"Aariz Report\nGender: {gender}\nDiagnosis: {diag}\nANB: {anb}\nMcNamara: {diff_mcnamara}mm")
+        res_main = streamlit_image_coordinates(draw_img, width=850, key="main_canvas")
+        if res_main:
+            c_scale = W / 850
+            m_coord = [int(res_main["x"] * c_scale), int(res_main["y"] * c_scale)]
+            if st.session_state.lms[target_idx] != m_coord:
+                st.session_state.lms[target_idx] = m_coord
+                st.session_state.click_version += 1
+                st.rerun()
 
-    gc.collect()
+    # --- آنالیز Steiner ---
+    st.divider()
+    def get_ang(p1, p2, p3):
+        v1, v2 = np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)
+        n = np.linalg.norm(v1)*np.linalg.norm(v2)
+        return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 1)
+    
+    sna = get_ang(l[10], l[4], l[0])
+    snb = get_ang(l[10], l[4], l[2])
+    c1, c2, c3 = st.columns(3)
+    c1.metric("SNA", f"{sna}°")
+    c2.metric("SNB", f"{snb}°")
+    c3.metric("ANB", f"{round(sna-snb, 1)}°")
