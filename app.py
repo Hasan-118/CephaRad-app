@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر نسبت به Gold Standard) ---
+# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,7 +38,15 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (بهینه‌سازی شده برای پایداری) ---
+# --- ۲. تنظیمات اولیه و UI (اولویت بالا) ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.32", layout="wide")
+
+st.sidebar.header("📏 تنظیمات بیمار")
+gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
+pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+
+# --- ۳. لودر و توابع پیش‌بینی ---
 def download_models_if_needed():
     model_ids = {
         'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
@@ -47,7 +55,7 @@ def download_models_if_needed():
     }
     for f, fid in model_ids.items():
         if not os.path.exists(f):
-            with st.spinner(f"Downloading model: {f}..."):
+            with st.sidebar.spinner(f"Downloading {f}..."):
                 gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
 
 @st.cache_resource
@@ -56,6 +64,7 @@ def load_aariz_models():
     loaded_models = []
     files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     for f in files:
+        if not os.path.exists(f): return [], device
         m = CephaUNet(n_landmarks=29).to(device)
         ckpt = torch.load(f, map_location=device)
         state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
@@ -79,14 +88,7 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect()
     return coords
 
-# --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.30", layout="wide")
-
-st.sidebar.header("📏 تنظیمات بیمار")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-
+# --- ۴. اجرای منطق اصلی ---
 download_models_if_needed()
 models, device = load_aariz_models()
 
@@ -100,8 +102,9 @@ if uploaded_file and len(models) == 3:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models, device)
-        st.session_state.lms = st.session_state.initial_lms.copy()
+        with st.spinner("Analyzing image..."):
+            st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models, device)
+            st.session_state.lms = st.session_state.initial_lms.copy()
 
     raw_img = st.session_state.raw_img; W, H = raw_img.size
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
@@ -155,7 +158,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۴. محاسبات و گزارش جامع (کامل و بدون حذف) ---
+    # --- ۵. محاسبات و گزارش جامع (کامل و بدون حذف) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
