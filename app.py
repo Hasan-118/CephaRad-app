@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.40", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.45", layout="wide")
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -42,13 +42,9 @@ class CephaUNet(nn.Module):
         return self.outc(x)
 
 # --- ۳. رابط کاربری اصلی ---
-st.title("🦷 Aariz Precision Station V7.8.40")
+st.title("🦷 Aariz Precision Station V7.8.45")
 
-# این متغیرها را در session_state ذخیره می‌کنیم تا بین Rerun ها حفظ شوند
-if 'models_loaded' not in st.session_state: st.session_state.models_loaded = False
-if 'download_done' not in st.session_state: st.session_state.download_done = False
-
-# --- ۴. توابع مدیریت فایل (جداسازی شده) ---
+# --- ۴. توابع مدیریت فایل با پایداری بالاتر ---
 def get_model_map():
     return {
         'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
@@ -56,32 +52,30 @@ def get_model_map():
         'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
 
+def check_files():
+    model_files = get_model_map().keys()
+    for f in model_files:
+        if not os.path.exists(f):
+            return False
+    return True
+
 def download_models():
     model_ids = get_model_map()
-    all_exists = True
-    for f in model_ids.keys():
-        if not os.path.exists(f):
-            all_exists = False
-            break
-    
-    if not all_exists:
-        st.sidebar.warning("⚠️ در حال دانلود مدل‌ها از سرور (این فرآیند ممکن است چند دقیقه طول بکشد)...")
+    if not check_files():
+        st.sidebar.warning("⚠️ در حال دانلود مدل‌ها... لطفا صبر کنید.")
         for f, fid in model_ids.items():
             if not os.path.exists(f):
                 gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
-        st.sidebar.success("✅ دانلود کامل شد. در حال بارگذاری...")
-        st.session_state.download_done = True
+        st.sidebar.success("✅ دانلود کامل شد. در حال اجرا...")
         st.rerun()
 
 @st.cache_resource
 def load_models():
-    model_files = get_model_map().keys()
-    for f in model_files:
-        if not os.path.exists(f): return None
+    if not check_files(): return None
     
     device = torch.device("cpu")
     loaded_models = []
-    for f in model_files:
+    for f in get_model_map().keys():
         m = CephaUNet(n_landmarks=29).to(device)
         ckpt = torch.load(f, map_location=device)
         state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
@@ -91,19 +85,19 @@ def load_models():
     return loaded_models
 
 # --- ۵. اجرای منطق اصلی برنامه ---
-download_models() # ابتدا بررسی دانلود
-models = load_models() # سپس لود کردن
+download_models() # بررسی و دانلود
+models = load_models() # لود مدل‌ها
 
-if models is None:
-    st.info("⌛ در حال آماده‌سازی اولیه سیستم...")
-    st.stop() # توقف اجرای بقیه کد تا دانلود تمام شود
-
-# سایدبار که حالا باید همیشه نمایش داده شود
+# نمایش سایدبار در هر صورت
 st.sidebar.title("🛠 مرکز پردازش Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+
+if models is None:
+    st.info("⌛ در حال لود شدن مدل‌های هوش مصنوعی. اگر طول کشید، صفحه را رفرش کنید.")
+    st.stop()
 
 # --- ۶. توابع پردازش تصویر (بدون تغییر) ---
 def run_precise_prediction(img_pil, models):
