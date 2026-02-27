@@ -37,19 +37,42 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. لودر و توابع پیش‌بینی (حفظ کامل طبق مرجع) ---
+# --- ۲. لودر و توابع پیش‌بینی (بهبود یافته - رفع مشکل حلقه تکرار) ---
 @st.cache_resource
 def load_aariz_models():
-    model_ids = {'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'}
-    device = torch.device("cpu"); loaded_models = []
+    model_ids = {
+        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
+        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
+        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+    }
+    
+    # استفاده از CPU برای ثبات در محیط ابری Streamlit
+    device = torch.device("cpu")                
+    loaded_models = []
+    
     for f, fid in model_ids.items():
-        if not os.path.exists(f): gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=True)
+        if not os.path.exists(f):
+            st.info(f"Downloading model: {f}...")
+            try:
+                gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
+            except Exception as e:
+                st.error(f"Failed to download {f}: {e}")
+                st.stop() # توقف برنامه اگر مدل دانلود نشد
+        
         try:
-            m = CephaUNet(n_landmarks=29).to(device); ckpt = torch.load(f, map_location=device)
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-            m.eval(); loaded_models.append(m)
-        except: pass
+            # بارگذاری مدل با معماری تعریف شده
+            m = CephaUNet(n_landmarks=29).to(device)
+            ckpt = torch.load(f, map_location=device)
+            
+            # مدیریت ساختار چک‌پوینت‌های مختلف
+            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt                
+            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)                
+            m.eval()                
+            loaded_models.append(m)
+        except Exception as e:
+            st.error(f"Error loading model {f}: {e}")
+            st.stop() # توقف برنامه در صورت خطای لود
+            
     return loaded_models, device
 
 def run_precise_prediction(img_pil, models, device):
@@ -67,7 +90,7 @@ def run_precise_prediction(img_pil, models, device):
     return coords
 
 # --- ۳. رابط کاربری (UI) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.19", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.20", layout="wide")
 models, device = load_aariz_models()
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
@@ -146,8 +169,6 @@ if uploaded_file and len(models) == 3:
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
 
     def dist_to_line(p, l1, l2):
-        # 
-        # تبدیل بردارها به ۳ بعدی برای سازگاری با NumPy 2.0
         v1 = np.append(l2 - l1, 0)
         v2 = np.append(p - l1, 0)
         return np.linalg.norm(np.cross(v1, v2)) / (np.linalg.norm(l2 - l1) + 1e-6)
