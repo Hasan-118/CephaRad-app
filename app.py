@@ -9,7 +9,10 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. معماری مرجع Aariz (بدون تغییر) ---
+# --- ۱. تنظیمات اولیه (باید اولین دستور باشد) ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.35", layout="wide")
+
+# --- ۲. معماری مرجع Aariz (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -38,33 +41,47 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۲. تنظیمات اولیه و UI (اولویت بالا) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.32", layout="wide")
-
+# --- ۳. رابط کاربری (Sidebar) ---
+st.sidebar.title("🛠 مرکز پردازش Aariz")
 st.sidebar.header("📏 تنظیمات بیمار")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
-# --- ۳. لودر و توابع پیش‌بینی ---
-def download_models_if_needed():
-    model_ids = {
+# --- ۴. توابع پردازشی (دانلود و لود مدل) ---
+def get_model_files():
+    return {
         'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks', 
         'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU', 
         'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
     }
-    for f, fid in model_ids.items():
+
+def check_and_download_models():
+    model_ids = get_model_files()
+    missing_files = []
+    for f in model_ids.keys():
         if not os.path.exists(f):
-            with st.sidebar.spinner(f"Downloading {f}..."):
-                gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
+            missing_files.append(f)
+    
+    if missing_files:
+        st.sidebar.warning(f"در حال دانلود مدل‌ها: {', '.join(missing_files)}")
+        for f in missing_files:
+            gdown.download(f'https://drive.google.com/uc?id={model_ids[f]}', f, quiet=False)
+        st.sidebar.success("مدل‌ها با موفقیت دانلود شدند.")
+        st.rerun()
 
 @st.cache_resource
 def load_aariz_models():
     device = torch.device("cpu")
     loaded_models = []
-    files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
+    files = get_model_files().keys()
+    
+    # اگر هنوز دانلود نشده‌اند، لود نکن
     for f in files:
         if not os.path.exists(f): return [], device
+
+    for f in files:
         m = CephaUNet(n_landmarks=29).to(device)
         ckpt = torch.load(f, map_location=device)
         state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
@@ -88,15 +105,12 @@ def run_precise_prediction(img_pil, models, device):
     gc.collect()
     return coords
 
-# --- ۴. اجرای منطق اصلی ---
-download_models_if_needed()
+# --- ۵. اجرای منطق اصلی ---
+check_and_download_models()
 models, device = load_aariz_models()
-
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
-
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file and len(models) == 3:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
@@ -158,7 +172,7 @@ if uploaded_file and len(models) == 3:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۵. محاسبات و گزارش جامع (کامل و بدون حذف) ---
+    # --- ۶. محاسبات و گزارش جامع (کامل و بدون حذف) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
