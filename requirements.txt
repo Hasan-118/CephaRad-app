@@ -5,3 +5,4 @@ streamlit-image-coordinates
 opencv-python-headless
 Pillow
 numpy
+-
