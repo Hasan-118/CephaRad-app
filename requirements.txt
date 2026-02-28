@@ -1,6 +1,5 @@
 streamlit
 torch
-torchvision
 numpy
 Pillow
 pandas
@@ -9,4 +8,3 @@ opencv-python-headless
 arabic-reshaper
 python-bidi
 fpdf2
-
