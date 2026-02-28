@@ -5,7 +5,7 @@ import numpy as np
 import os
 import gc
 from PIL import Image, ImageDraw
-import torchvision.transforms as transforms
+# import torchvision.transforms as transforms # حذف شد برای بهینه‌سازی
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه و استایل (فشرده‌سازی) ---
@@ -78,6 +78,8 @@ def load_models():
         m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
         m.eval()
         loaded_models.append(m)
+        del ckpt
+        gc.collect()
     return loaded_models
 
 # --- ۴. اجرای منطق اصلی برنامه ---
@@ -86,26 +88,42 @@ models = load_models()
 st.sidebar.title("🛠 مرکز پردازش Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 2) # پیش‌فرض کمتر شد
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 2)
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
     st.stop()
 
-# --- ۵. پردازش تصویر و تنظیم ابعاد (فشرده‌تر) ---
+# --- ۵. پردازش تصویر و تنظیم ابعاد (بهینه‌سازی) ---
 def run_precise_prediction(img_pil, models):
     device = torch.device("cpu")
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
     nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
+    canvas.paste(img_rs, (px, py))
+    
+    # --- تبدیل به تنسور با استفاده از numpy (جایگزین torchvision) ---
+    np_img = np.array(canvas).astype(np.float32) / 255.0
+    input_tensor = torch.from_numpy(np_img).unsqueeze(0).unsqueeze(0).to(device)
+    # -------------------------------------------------------------
+    
+    with torch.no_grad():
+        outs = []
+        for m in models:
+            out = m(input_tensor)[0].cpu().numpy()
+            outs.append(out)
+            del out
+            gc.collect()
+            
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     coords = {}
     for i in range(29):
         hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
+    
+    del input_tensor
+    del outs
     gc.collect()
     return coords
 
@@ -129,12 +147,12 @@ if uploaded_file:
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
 
-    col1, col2 = st.columns([1, 2.5]) # ستون‌ها فشرده‌تر
+    col1, col2 = st.columns([1, 2.5])
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 150 # زوم کمتر
+        l_pos = st.session_state.lms[target_idx]; size_m = 150
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((300, 300), Image.LANCZOS) # تصویر زوم کوچک‌تر
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((300, 300), Image.LANCZOS)
         mag_draw = ImageDraw.Draw(mag_crop)
         mag_draw.line((135, 150, 165, 150), fill="red", width=2); mag_draw.line((150, 135, 150, 165), fill="red", width=2)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
@@ -145,18 +163,16 @@ if uploaded_file:
 
     with col2:
         st.subheader("🖼 نمای گرافیکی")
-        # --- اصلاح اندازه تصویر (فشرده‌تر) ---
-        disp_w = 700  # عرض کمتر برای تصویر اصلی
+        disp_w = 700
         ratio_disp = disp_w / W
         disp_h = int(H * ratio_disp)
         
         draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR)
         draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
-        # -----------------------------
 
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=1) # خطوط نازک‌تر
+            draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=1)
             draw.line([sc(l[4]), sc(l[0])], fill="cyan", width=1)
             draw.line([sc(l[4]), sc(l[2])], fill="magenta", width=1)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
@@ -169,7 +185,7 @@ if uploaded_file:
 
         for i, pos in l.items():
             s_pos = sc(pos); color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 4 if i == target_idx else 2 # نقاط کوچک‌تر
+            r = 4 if i == target_idx else 2
             draw.ellipse([s_pos[0]-r, s_pos[1]-r, s_pos[0]+r, s_pos[1]+r], fill=color, outline="white")
             if text_scale > 1:
                 draw.text((s_pos[0]+8, s_pos[1]-4), landmark_names[i], fill=color)
@@ -203,14 +219,13 @@ if uploaded_file:
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
     m1, m2, m3, m4 = st.columns(4)
-    # استفاده از فونت کوچک‌تر برای اعداد متریک
     m1.metric("Steiner (ANB)", f"{anb}°")
     m2.metric("Wits", f"{round(wits_mm, 2)} mm")
     m3.metric("McNamara", f"{diff_mcnamara} mm")
     m4.metric("Downs (FMA)", f"{fma}°")
 
     st.divider()
-    st.header(f"📑 گزارش بالینی") # عنوان کوتاه‌تر
+    st.header(f"📑 گزارش بالینی")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("👄 بافت نرم")
