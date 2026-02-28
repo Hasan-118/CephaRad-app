@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.9.0", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.1", layout="wide")
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -40,38 +40,26 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت مدل‌ها (تغییر یافته برای خواندن از گیت‌هاب) ---
-def get_model_map():
-    # نام فایل‌ها باید دقیقا مشابه فایل‌های موجود در گیت‌هاب باشد
-    return {
-        'checkpoint_unet_clinical.pth': 'مدل اصلی سفالومتری',
-        'specialist_pure_model.pth': 'مدل متخصص نواحی قدامی',
-        'tmj_specialist_model.pth': 'مدل متخصص نواحی خلفی و TMJ'
-    }
-
-def check_local_models():
-    """بررسی وجود مدل‌ها در پوشه محلی"""
-    missing_files = []
-    for f in get_model_map().keys():
-        if not os.path.exists(f):
-            missing_files.append(f)
-    return missing_files
-
+# --- ۳. مدیریت مدل‌ها (تغییر یافته برای پایداری) ---
 @st.cache_resource
-def load_models():
-    """بارگذاری مدل‌ها از حافظه محلی"""
-    missing = check_local_models()
-    if missing:
-        st.error(f"❌ خطای حیاتی: فایل‌های مدل زیر در گیت‌هاب پیدا نشدند: {', '.join(missing)}")
-        return None
+def load_models_cached():
+    """بارگذاری مدل‌ها از حافظه محلی با کشینگ مخصوص"""
+    model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
+    
+    # بررسی وجود فایل‌ها
+    for f in model_files:
+        if not os.path.exists(f):
+            st.error(f"❌ خطای حیاتی: فایل مدل `{f}` در گیت‌هاب پیدا نشد.")
+            return None
     
     device = torch.device("cpu")
     loaded_models = []
     
-    # لود مدل‌ها به صورت ترتیبی برای مدیریت حافظه
-    for f in get_model_map().keys():
+    # لود مدل‌ها به صورت ترتیبی و مدیریت حافظه
+    for f in model_files:
         m = CephaUNet(n_landmarks=29).to(device)
         try:
+            # بارگذاری به صورت لزی (Lazy Loading) برای جلوگیری از Timeout
             ckpt = torch.load(f, map_location=device)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
@@ -85,11 +73,12 @@ def load_models():
     return loaded_models
 
 # --- ۴. رابط کاربری (UI) ---
-st.title("🦷 Aariz Precision Station V7.9.0")
+st.title("🦷 Aariz Precision Station V7.9.1")
 st.sidebar.title("🛠 تنظیمات Aariz")
 
-# لود مدل‌ها (بدون نیاز به دانلود)
-models = load_models()
+# لود مدل‌ها (فقط یکبار در حافظه سرور قرار می‌گیرند)
+with st.spinner("⏳ در حال بارگذاری مدل‌های هوش مصنوعی Aariz..."):
+    models = load_models_cached()
 
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
@@ -97,7 +86,7 @@ text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
-    st.info("⌛ در حال انتظار برای بارگذاری مدل‌های هوش مصنوعی از گیت‌هاب...")
+    st.warning("⚠️ مدل‌ها بارگذاری نشدند. لطفاً وضعیت فایل‌ها را در گیت‌هاب بررسی کنید.")
     st.stop()
 
 # --- ۵. پردازش تصویر (بخش اصلی سرعت) ---
@@ -141,7 +130,7 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🤖 در حال تحلیل تصویر توسط مدل‌های ۳گانه Aariz (منبع: Github)..."):
+        with st.spinner("🤖 در حال تحلیل تصویر توسط مدل‌های ۳گانه Aariz..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
