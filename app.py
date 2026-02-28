@@ -3,16 +3,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
-import gdown
 import gc
 from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.50", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.9.0", layout="wide")
 
-# --- ۲. معماری مرجع ---
+# --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -41,47 +40,55 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت مدل‌ها با بهینه‌سازی ---
+# --- ۳. مدیریت مدل‌ها (تغییر یافته برای خواندن از گیت‌هاب) ---
 def get_model_map():
+    # نام فایل‌ها باید دقیقا مشابه فایل‌های موجود در گیت‌هاب باشد
     return {
-        'checkpoint_unet_clinical.pth': '1a1sZ2z0X6mOwljhBjmItu_qrWYv3v_ks',
-        'specialist_pure_model.pth': '1RakXVfUC_ETEdKGBi6B7xOD7MjD59jfU',
-        'tmj_specialist_model.pth': '1tizRbUwf7LgC6Radaeiz6eUffiwal0cH'
+        'checkpoint_unet_clinical.pth': 'مدل اصلی سفالومتری',
+        'specialist_pure_model.pth': 'مدل متخصص نواحی قدامی',
+        'tmj_specialist_model.pth': 'مدل متخصص نواحی خلفی و TMJ'
     }
 
-def download_models():
-    if not all(os.path.exists(f) for f in get_model_map().keys()):
-        st.sidebar.warning("⚠️ در حال دانلود مدل‌ها... (فقط یکبار در هر استارت سرور)")
-        for f, fid in get_model_map().items():
-            if not os.path.exists(f):
-                gdown.download(f'https://drive.google.com/uc?id={fid}', f, quiet=False)
-        st.sidebar.success("✅ دانلود تمام شد.")
-        st.rerun()
+def check_local_models():
+    """بررسی وجود مدل‌ها در پوشه محلی"""
+    missing_files = []
+    for f in get_model_map().keys():
+        if not os.path.exists(f):
+            missing_files.append(f)
+    return missing_files
 
 @st.cache_resource
 def load_models():
-    # بررسی وجود فایل‌ها قبل از لود
-    if not all(os.path.exists(f) for f in get_model_map().keys()):
+    """بارگذاری مدل‌ها از حافظه محلی"""
+    missing = check_local_models()
+    if missing:
+        st.error(f"❌ خطای حیاتی: فایل‌های مدل زیر در گیت‌هاب پیدا نشدند: {', '.join(missing)}")
         return None
     
     device = torch.device("cpu")
     loaded_models = []
-    # لود مدل‌ها به صورت ترتیبی برای کاهش پیک مصرف حافظه
+    
+    # لود مدل‌ها به صورت ترتیبی برای مدیریت حافظه
     for f in get_model_map().keys():
         m = CephaUNet(n_landmarks=29).to(device)
-        ckpt = torch.load(f, map_location=device)
-        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-        m.eval()
-        loaded_models.append(m)
-        gc.collect() # آزادسازی حافظه بعد از هر مدل
+        try:
+            ckpt = torch.load(f, map_location=device)
+            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+            m.eval()
+            loaded_models.append(m)
+            gc.collect() # آزادسازی حافظه
+        except Exception as e:
+            st.error(f"❌ خطا در بارگذاری فایل {f}: {e}")
+            return None
+            
     return loaded_models
 
 # --- ۴. رابط کاربری (UI) ---
-st.title("🦷 Aariz Precision Station V7.8.50")
+st.title("🦷 Aariz Precision Station V7.9.0")
 st.sidebar.title("🛠 تنظیمات Aariz")
 
-download_models() 
+# لود مدل‌ها (بدون نیاز به دانلود)
 models = load_models()
 
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
@@ -90,7 +97,7 @@ text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
-    st.info("⌛ در حال بارگذاری مدل‌های هوش مصنوعی در حافظه...")
+    st.info("⌛ در حال انتظار برای بارگذاری مدل‌های هوش مصنوعی از گیت‌هاب...")
     st.stop()
 
 # --- ۵. پردازش تصویر (بخش اصلی سرعت) ---
@@ -134,14 +141,13 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🤖 در حال تحلیل تصویر توسط مدل‌های ۳گانه Aariz..."):
+        with st.spinner("🤖 در حال تحلیل تصویر توسط مدل‌های ۳گانه Aariz (منبع: Github)..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
     raw_img = st.session_state.raw_img; W, H = raw_img.size
     
     # --- UI برای Micro-Adjustment و نمایش گرافیکی ---                
-    # (کد بخش UI برای اختصار تغییر نکرده و از V7.8.45 است)
     target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     if st.sidebar.button("🔄 Reset Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
@@ -195,7 +201,6 @@ if uploaded_file:
 
     # --- ۷. محاسبات و گزارش (بدون تغییر) ---
     st.divider()
-    # (کد محاسبات V7.8.45 اینجا قرار می‌گیرد)
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
