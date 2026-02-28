@@ -4,9 +4,9 @@ torchvision
 numpy
 Pillow
 pandas
-gdown
 streamlit-image-coordinates
 opencv-python-headless
 arabic-reshaper
 python-bidi
 fpdf2
+
