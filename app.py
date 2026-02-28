@@ -8,8 +8,23 @@ from PIL import Image, ImageDraw
 import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.47", layout="wide")
+# --- ۱. تنظیمات صفحه و استایل (فشرده‌سازی) ---
+st.set_page_config(page_title="Aariz Precision Station V7.8.48", layout="wide")
+
+# اعمال CSS برای کاهش سایز کلی عناصر
+st.markdown("""
+<style>
+    /* کاهش سایز فونت کلی */
+    html, body, [class*="css"]  {
+        font-size: 14px;
+    }
+    /* کاهش فاصله عناصر */
+    .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
+    .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
+    /* کاهش سایز سایدبار */
+    [data-testid="stSidebar"] { min-width: 250px; max-width: 300px; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -71,13 +86,13 @@ models = load_models()
 st.sidebar.title("🛠 مرکز پردازش Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
+text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 2) # پیش‌فرض کمتر شد
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
     st.stop()
 
-# --- ۵. پردازش تصویر و تنظیم ابعاد (فیکس مشکل اندازه) ---
+# --- ۵. پردازش تصویر و تنظیم ابعاد (فشرده‌تر) ---
 def run_precise_prediction(img_pil, models):
     device = torch.device("cpu")
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
@@ -114,51 +129,50 @@ if uploaded_file:
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
 
-    col1, col2 = st.columns([1.2, 2.5])
+    col1, col2 = st.columns([1, 2.5]) # ستون‌ها فشرده‌تر
     with col1:
         st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 180 
+        l_pos = st.session_state.lms[target_idx]; size_m = 150 # زوم کمتر
         left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((400, 400), Image.LANCZOS)
+        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((300, 300), Image.LANCZOS) # تصویر زوم کوچک‌تر
         mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((180, 200, 220, 200), fill="red", width=3); mag_draw.line((200, 180, 200, 220), fill="red", width=3)
+        mag_draw.line((135, 150, 165, 150), fill="red", width=2); mag_draw.line((150, 135, 150, 165), fill="red", width=2)
         res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
         if res_mag:
-            scale_mag = size_m / 400; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
+            scale_mag = size_m / 300; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
             if st.session_state.lms[target_idx] != new_c:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
         st.subheader("🖼 نمای گرافیکی")
-        # --- بخش اصلاح اندازه تصویر ---
-        disp_w = 800  # محدود کردن عرض کادر
+        # --- اصلاح اندازه تصویر (فشرده‌تر) ---
+        disp_w = 700  # عرض کمتر برای تصویر اصلی
         ratio_disp = disp_w / W
         disp_h = int(H * ratio_disp)
         
-        # تغییر سایز تصویر برای نمایش در کادر محدود شده
         draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR)
         draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
         # -----------------------------
 
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=2)
+            draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=1) # خطوط نازک‌تر
             draw.line([sc(l[4]), sc(l[0])], fill="cyan", width=1)
             draw.line([sc(l[4]), sc(l[2])], fill="magenta", width=1)
             p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([sc(p_occ_p), sc(p_occ_a)], fill="white", width=2)
-            draw.line([sc(l[15]), sc(l[5])], fill="orange", width=2)
-            draw.line([sc(l[14]), sc(l[3])], fill="purple", width=2)
+            draw.line([sc(p_occ_p), sc(p_occ_a)], fill="white", width=1)
+            draw.line([sc(l[15]), sc(l[5])], fill="orange", width=1)
+            draw.line([sc(l[14]), sc(l[3])], fill="purple", width=1)
             draw.line([sc(l[20]), sc(l[21])], fill="blue", width=1)
             draw.line([sc(l[23]), sc(l[17])], fill="green", width=1)
-            draw.line([sc(l[8]), sc(l[27])], fill="pink", width=2)
+            draw.line([sc(l[8]), sc(l[27])], fill="pink", width=1)
 
         for i, pos in l.items():
             s_pos = sc(pos); color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 5 if i == target_idx else 3
+            r = 4 if i == target_idx else 2 # نقاط کوچک‌تر
             draw.ellipse([s_pos[0]-r, s_pos[1]-r, s_pos[0]+r, s_pos[1]+r], fill=color, outline="white")
             if text_scale > 1:
-                draw.text((s_pos[0]+10, s_pos[1]-5), landmark_names[i], fill=color)
+                draw.text((s_pos[0]+8, s_pos[1]-4), landmark_names[i], fill=color)
 
         res_main = streamlit_image_coordinates(draw_img, key=f"main_{st.session_state.click_version}")
         if res_main:
@@ -166,7 +180,7 @@ if uploaded_file:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۷. محاسبات و گزارش ---
+    # --- ۷. محاسبات و گزارش (فشرده) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -189,27 +203,28 @@ if uploaded_file:
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
-    m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
-    m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
+    # استفاده از فونت کوچک‌تر برای اعداد متریک
+    m1.metric("Steiner (ANB)", f"{anb}°")
+    m2.metric("Wits", f"{round(wits_mm, 2)} mm")
+    m3.metric("McNamara", f"{diff_mcnamara} mm")
     m4.metric("Downs (FMA)", f"{fma}°")
 
     st.divider()
-    st.header(f"📑 گزارش بالینی ({gender})")
+    st.header(f"📑 گزارش بالینی") # عنوان کوتاه‌تر
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_li} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_ls} mm**")
-        st.subheader("💡 نقشه راه درمان")
+        st.subheader("👄 بافت نرم")
+        st.write(f"• لب بالا: **{dist_li} mm**")
+        st.write(f"• لب پایین: **{dist_ls} mm**")
+        st.subheader("💡 درمان")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• وضعیت فکی: **{diag}**")
+        st.write(f"• وضعیت: **{diag}**")
     with c2:
-        st.subheader("📐 تحلیل زوایا و رشد")
+        st.subheader("📐 زوایا")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگوی اسکلتال: **{fma_desc}**")
-        st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
-        st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+        st.write(f"• الگو: **{fma_desc}**")
+        st.write(f"• طول فک بالا: {round(co_a, 1)} mm")
+        st.write(f"• طول فک پایین: {round(co_gn, 1)} mm")
     
     gc.collect()
