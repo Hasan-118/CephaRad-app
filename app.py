@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه و استایل (فشرده‌سازی) ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.48", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 
 # اعمال CSS برای کاهش سایز کلی عناصر
 st.markdown("""
@@ -55,14 +55,15 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت فایل و مدل‌ها ---
+# --- ۳. مدیریت فایل و مدل‌ها (به‌روزرسانی شده) ---
 def get_model_map():
-    return ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
+    # استفاده از مدل‌های کوانتایز شده برای عملکرد بهتر
+    return ['checkpoint_unet_clinical_int8.pth', 'specialist_pure_model_int8.pth', 'tmj_specialist_model_int8.pth']
 
 def check_files():
     for f in get_model_map():
         if not os.path.exists(f):
-            st.error(f"❌ فایل `{f}` پیدا نشد.")
+            st.error(f"❌ فایل `{f}` پیدا نشد. لطفا فایل‌های کوانتایز شده را به پوشه پروژه منتقل کنید.")
             return False
     return True
 
@@ -71,11 +72,18 @@ def load_models():
     if not check_files(): return None
     device = torch.device("cpu")
     loaded_models = []
+    
+    # ساختار مدل پایه برای بارگذاری وزنه های int8
     for f in get_model_map():
         m = CephaUNet(n_landmarks=29).to(device)
+        
+        # مدل‌های کوانتایز شده Dynamic نیاز به آماده‌سازی قبل از لود دارند
+        m = torch.quantization.quantize_dynamic(
+            m, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8
+        )
+        
         ckpt = torch.load(f, map_location=device)
-        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+        m.load_state_dict(ckpt)
         m.eval()
         loaded_models.append(m)
         del ckpt
@@ -136,7 +144,7 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🧠 در حال تحلیل..."):
+        with st.spinner("🧠 در حال تحلیل با مدل‌های بهینه‌شده..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
