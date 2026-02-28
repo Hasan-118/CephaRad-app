@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.9.1", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V8.1.0", layout="wide")
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -40,45 +40,50 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت مدل‌ها (تغییر یافته برای پایداری) ---
+# --- ۳. مدیریت مدل‌ها (تغییر یافته برای سرعت و پایداری) ---
 @st.cache_resource
-def load_models_cached():
-    """بارگذاری مدل‌ها از حافظه محلی با کشینگ مخصوص"""
+def load_models_fast():
+    """بارگذاری مدل‌ها با تکنیک کوانتایزاسیون برای جلوگیری از Timeout"""
     model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
     
     # بررسی وجود فایل‌ها
     for f in model_files:
         if not os.path.exists(f):
-            st.error(f"❌ خطای حیاتی: فایل مدل `{f}` در گیت‌هاب پیدا نشد.")
+            st.error(f"❌ فایل مدل `{f}` در پوشه پروژه پیدا نشد.")
             return None
     
     device = torch.device("cpu")
     loaded_models = []
     
-    # لود مدل‌ها به صورت ترتیبی و مدیریت حافظه
     for f in model_files:
+        # ایجاد نمونه مدل
         m = CephaUNet(n_landmarks=29).to(device)
+        
         try:
-            # بارگذاری به صورت لزی (Lazy Loading) برای جلوگیری از Timeout
+            # بارگذاری وزن‌ها
             ckpt = torch.load(f, map_location=device)
             state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
             m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+            
+            # *** اعمال کوانتایزاسیون داینامیک برای افزایش سرعت و کاهش حجم ***
+            m = torch.quantization.quantize_dynamic(m, {nn.Conv2d}, dtype=torch.qint8)
+            
             m.eval()
             loaded_models.append(m)
             gc.collect() # آزادسازی حافظه
         except Exception as e:
-            st.error(f"❌ خطا در بارگذاری فایل {f}: {e}")
+            st.error(f"❌ خطا در بارگذاری {f}: {e}")
             return None
             
     return loaded_models
 
 # --- ۴. رابط کاربری (UI) ---
-st.title("🦷 Aariz Precision Station V7.9.1")
+st.title("🦷 Aariz Precision Station V8.1.0")
 st.sidebar.title("🛠 تنظیمات Aariz")
 
-# لود مدل‌ها (فقط یکبار در حافظه سرور قرار می‌گیرند)
-with st.spinner("⏳ در حال بارگذاری مدل‌های هوش مصنوعی Aariz..."):
-    models = load_models_cached()
+# لود مدل‌ها با استفاده از کشینگ مخصوص
+with st.spinner("⏳ در حال لود سریع مدل‌های فشرده..."):
+    models = load_models_fast()
 
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
@@ -86,7 +91,7 @@ text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 
 uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
-    st.warning("⚠️ مدل‌ها بارگذاری نشدند. لطفاً وضعیت فایل‌ها را در گیت‌هاب بررسی کنید.")
+    st.warning("⚠️ مدل‌ها بارگذاری نشدند. لطفاً فایل‌ها را بررسی کنید.")
     st.stop()
 
 # --- ۵. پردازش تصویر (بخش اصلی سرعت) ---
@@ -130,7 +135,7 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🤖 در حال تحلیل تصویر توسط مدل‌های ۳گانه Aariz..."):
+        with st.spinner("🤖 در حال تحلیل توسط مدل‌های بهینه شده Aariz..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
