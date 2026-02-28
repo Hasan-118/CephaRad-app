@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V8.1.0", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.46", layout="wide")
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -40,93 +40,75 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت مدل‌ها (تغییر یافته برای سرعت و پایداری) ---
-@st.cache_resource
-def load_models_fast():
-    """بارگذاری مدل‌ها با تکنیک کوانتایزاسیون برای جلوگیری از Timeout"""
-    model_files = ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
-    
-    # بررسی وجود فایل‌ها
+# --- ۳. رابط کاربری اصلی ---
+st.title("🦷 Aariz Precision Station V7.8.46 (Local Github)")
+
+# --- ۴. توابع مدیریت فایل (خواند از گیت‌هاب) ---
+def get_model_map():
+    # نام فایل‌ها که باید در کنار app.py در گیت‌هاب باشند
+    return [
+        'checkpoint_unet_clinical.pth',
+        'specialist_pure_model.pth',
+        'tmj_specialist_model.pth'
+    ]
+
+def check_files():
+    model_files = get_model_map()
     for f in model_files:
         if not os.path.exists(f):
-            st.error(f"❌ فایل مدل `{f}` در پوشه پروژه پیدا نشد.")
-            return None
+            st.error(f"❌ فایل `{f}` پیدا نشد. مطمئن شوید مدل‌ها در گیت‌هاب آپلود شده‌اند.")
+            return False
+    return True
+
+@st.cache_resource
+def load_models():
+    if not check_files(): return None
     
     device = torch.device("cpu")
     loaded_models = []
     
-    for f in model_files:
-        # ایجاد نمونه مدل
+    for f in get_model_map():
         m = CephaUNet(n_landmarks=29).to(device)
+        ckpt = torch.load(f, map_location=device)
+        state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
+        m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
+        m.eval()
+        loaded_models.append(m)
         
-        try:
-            # بارگذاری وزن‌ها
-            ckpt = torch.load(f, map_location=device)
-            state = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-            m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
-            
-            # *** اعمال کوانتایزاسیون داینامیک برای افزایش سرعت و کاهش حجم ***
-            m = torch.quantization.quantize_dynamic(m, {nn.Conv2d}, dtype=torch.qint8)
-            
-            m.eval()
-            loaded_models.append(m)
-            gc.collect() # آزادسازی حافظه
-        except Exception as e:
-            st.error(f"❌ خطا در بارگذاری {f}: {e}")
-            return None
-            
     return loaded_models
 
-# --- ۴. رابط کاربری (UI) ---
-st.title("🦷 Aariz Precision Station V8.1.0")
-st.sidebar.title("🛠 تنظیمات Aariz")
+# --- ۵. اجرای منطق اصلی برنامه ---
+models = load_models() # لود مدل‌ها از گیت‌هاب
 
-# لود مدل‌ها با استفاده از کشینگ مخصوص
-with st.spinner("⏳ در حال لود سریع مدل‌های فشرده..."):
-    models = load_models_fast()
-
+# نمایش سایدبار
+st.sidebar.title("🛠 مرکز پردازش Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
-    st.warning("⚠️ مدل‌ها بارگذاری نشدند. لطفاً فایل‌ها را بررسی کنید.")
+    st.info("⌛ در حال لود شدن مدل‌ها از گیت‌هاب. اطمینان حاصل کنید فایل‌ها آپلود شده‌اند.")
     st.stop()
 
-# --- ۵. پردازش تصویر (بخش اصلی سرعت) ---
+# --- ۶. توابع پردازش تصویر (بدون تغییر) ---
 def run_precise_prediction(img_pil, models):
     device = torch.device("cpu")
-    ow, oh = img_pil.size
-    img_gray = img_pil.convert('L')
-    
-    # تغییر سایز به 512 برای مدل
-    ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio)
-    img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    
-    canvas = Image.new("L", (512, 512))
-    px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py))
-    
-    input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
-    
-    # پیش‌بینی با 3 مدل
-    with torch.no_grad():
-        outs = [m(input_tensor)[0].cpu().numpy() for m in models]
-    
-    # منطق اختصاصی لندمارک‌ها
+    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
+    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
+    canvas.paste(img_rs, (px, py)); input_tensor = transforms.ToTensor()(canvas).unsqueeze(0).to(device)
+    with torch.no_grad(): outs = [m(input_tensor)[0].cpu().numpy() for m in models]
     ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
     coords = {}
     for i in range(29):
         hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
         y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        # تبدیل مختصات به تصویر اصلی
         coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-    
+    gc.collect()
     return coords
 
-# --- ۶. اجرای تحلیل ---
+# --- ۷. اجرای تحلیل ---
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
@@ -135,15 +117,14 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🤖 در حال تحلیل توسط مدل‌های بهینه شده Aariz..."):
+        with st.spinner("🧠 در حال تحلیل تصویر توسط هوش مصنوعی Aariz..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
     raw_img = st.session_state.raw_img; W, H = raw_img.size
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    # --- UI برای Micro-Adjustment و نمایش گرافیکی ---                
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    if st.sidebar.button("🔄 Reset Point"):
+    if st.sidebar.button("🔄 Reset Current Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
 
@@ -162,12 +143,11 @@ if uploaded_file:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی")
+        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
         disp_w = 850; ratio_disp = disp_w / W; disp_h = int(H * ratio_disp)
         draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
 
-        # کشیدن خطوط آنالیز
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=2)
             draw.line([sc(l[4]), sc(l[0])], fill="cyan", width=1)
@@ -193,14 +173,16 @@ if uploaded_file:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۷. محاسبات و گزارش (بدون تغییر) ---
+    # --- ۸. محاسبات و گزارش (بدون تغییر) ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
         n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
+
     def dist_to_line(p, l1, l2):
         v1 = np.append(l2 - l1, 0); v2 = np.append(p - l1, 0)
         return np.linalg.norm(np.cross(v1, v2)) / (np.linalg.norm(l2 - l1) + 1e-6)
+
     sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
     co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
@@ -212,26 +194,37 @@ if uploaded_file:
     wits_norm = 0 if gender == "آقا (Male)" else -1
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°", f"SNA: {sna}, SNB: {snb}")
     m2.metric("Wits (Calibrated)", f"{round(wits_mm, 2)} mm", f"Normal: {wits_norm}mm")
     m3.metric("McNamara Diff", f"{diff_mcnamara} mm", "Co-Gn vs Co-A")
     m4.metric("Downs (FMA)", f"{fma}°")
+
     st.divider()
-    st.header(f"📑 گزارش بالینی ({gender})")
+    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 بافت نرم و زیبایی")
-        st.write(f"• لب بالا تا خط E: **{dist_ls} mm**")
-        st.write(f"• لب پایین تا خط E: **{dist_li} mm**")
-        st.subheader("💡 نقشه راه درمان")
+        st.subheader("👄 تحلیل بافت نرم و زیبایی")
+        st.write(f"• لب بالا تا خط E: **{dist_li} mm**")
+        st.write(f"• لب پایین تا خط E: **{dist_ls} mm**")
+        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
+        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
+
+        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• وضعیت فکی: **{diag}**")
+        st.write(f"• **وضعیت فکی:** {diag}")
+        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
+            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
+        else:
+            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
+            
     with c2:
         st.subheader("📐 تحلیل زوایا و رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
         st.write(f"• الگوی اسکلتال: **{fma_desc}**")
         st.write(f"• طول فک بالا (Co-A): {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین (Co-Gn): {round(co_gn, 1)} mm")
+    
     gc.collect()
