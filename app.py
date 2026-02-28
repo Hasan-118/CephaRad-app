@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- ۱. تنظیمات صفحه ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.46", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.47", layout="wide")
 
 # --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
@@ -40,33 +40,22 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. رابط کاربری اصلی ---
-st.title("🦷 Aariz Precision Station V7.8.46 (Local Github)")
-
-# --- ۴. توابع مدیریت فایل (خواند از گیت‌هاب) ---
+# --- ۳. مدیریت فایل و مدل‌ها ---
 def get_model_map():
-    # نام فایل‌ها که باید در کنار app.py در گیت‌هاب باشند
-    return [
-        'checkpoint_unet_clinical.pth',
-        'specialist_pure_model.pth',
-        'tmj_specialist_model.pth'
-    ]
+    return ['checkpoint_unet_clinical.pth', 'specialist_pure_model.pth', 'tmj_specialist_model.pth']
 
 def check_files():
-    model_files = get_model_map()
-    for f in model_files:
+    for f in get_model_map():
         if not os.path.exists(f):
-            st.error(f"❌ فایل `{f}` پیدا نشد. مطمئن شوید مدل‌ها در گیت‌هاب آپلود شده‌اند.")
+            st.error(f"❌ فایل `{f}` پیدا نشد.")
             return False
     return True
 
 @st.cache_resource
 def load_models():
     if not check_files(): return None
-    
     device = torch.device("cpu")
     loaded_models = []
-    
     for f in get_model_map():
         m = CephaUNet(n_landmarks=29).to(device)
         ckpt = torch.load(f, map_location=device)
@@ -74,24 +63,21 @@ def load_models():
         m.load_state_dict({k.replace('module.', ''): v for k, v in state.items()}, strict=False)
         m.eval()
         loaded_models.append(m)
-        
     return loaded_models
 
-# --- ۵. اجرای منطق اصلی برنامه ---
-models = load_models() # لود مدل‌ها از گیت‌هاب
+# --- ۴. اجرای منطق اصلی برنامه ---
+models = load_models()
 
-# نمایش سایدبار
 st.sidebar.title("🛠 مرکز پردازش Aariz")
 gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
 pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
 text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 3)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر سفالومتری:", type=['png', 'jpg', 'jpeg'])
+uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
 
 if models is None:
-    st.info("⌛ در حال لود شدن مدل‌ها از گیت‌هاب. اطمینان حاصل کنید فایل‌ها آپلود شده‌اند.")
     st.stop()
 
-# --- ۶. توابع پردازش تصویر (بدون تغییر) ---
+# --- ۵. پردازش تصویر و تنظیم ابعاد (فیکس مشکل اندازه) ---
 def run_precise_prediction(img_pil, models):
     device = torch.device("cpu")
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
@@ -108,7 +94,7 @@ def run_precise_prediction(img_pil, models):
     gc.collect()
     return coords
 
-# --- ۷. اجرای تحلیل ---
+# --- ۶. اجرای تحلیل ---
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
@@ -117,14 +103,14 @@ if uploaded_file:
     if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
         st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
         st.session_state.file_id = uploaded_file.name
-        with st.spinner("🧠 در حال تحلیل تصویر توسط هوش مصنوعی Aariz..."):
+        with st.spinner("🧠 در حال تحلیل..."):
             st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
             st.session_state.lms = st.session_state.initial_lms.copy()
 
     raw_img = st.session_state.raw_img; W, H = raw_img.size
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک فعال:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
+    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
     
-    if st.sidebar.button("🔄 Reset Current Point"):
+    if st.sidebar.button("🔄 Reset Point"):
         st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
         st.session_state.click_version += 1; st.rerun()
 
@@ -143,10 +129,17 @@ if uploaded_file:
                 st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
 
     with col2:
-        st.subheader("🖼 نمای گرافیکی و خطوط آنالیز")
-        disp_w = 850; ratio_disp = disp_w / W; disp_h = int(H * ratio_disp)
-        draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR); draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
+        st.subheader("🖼 نمای گرافیکی")
+        # --- بخش اصلاح اندازه تصویر ---
+        disp_w = 800  # محدود کردن عرض کادر
+        ratio_disp = disp_w / W
+        disp_h = int(H * ratio_disp)
+        
+        # تغییر سایز تصویر برای نمایش در کادر محدود شده
+        draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR)
+        draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
         def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
+        # -----------------------------
 
         if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
             draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=2)
@@ -173,7 +166,7 @@ if uploaded_file:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۸. محاسبات و گزارش (بدون تغییر) ---
+    # --- ۷. محاسبات و گزارش ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -202,24 +195,16 @@ if uploaded_file:
     m4.metric("Downs (FMA)", f"{fma}°")
 
     st.divider()
-    st.header(f"📑 گزارش بالینی اختصاصی ({gender})")
+    st.header(f"📑 گزارش بالینی ({gender})")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("👄 تحلیل بافت نرم و زیبایی")
+        st.subheader("👄 بافت نرم و زیبایی")
         st.write(f"• لب بالا تا خط E: **{dist_li} mm**")
         st.write(f"• لب پایین تا خط E: **{dist_ls} mm**")
-        if gender == "آقا (Male)" and dist_li > 0: st.warning("⚠️ نیم‌رخ محدب (Convex) در مردان.")
-        elif gender == "خانم (Female)" and dist_li > 1: st.warning("⚠️ پروتروژن لب در نیم‌رخ زنانه.")
-
-        st.subheader("💡 نقشه راه درمان (Diagnostic Roadmap)")
+        st.subheader("💡 نقشه راه درمان")
         w_diff = wits_mm - wits_norm
         diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• **وضعیت فکی:** {diag}")
-        if abs(anb) > 8 or abs(diff_mcnamara - 25) > 10:
-            st.error(f"🚨 دیسکرپانسی شدید؛ احتمال نیاز به جراحی فک بالا است.")
-        else:
-            st.success("✅ درمان ارتودنسی با مکانوتراپی استاندارد.")
-            
+        st.write(f"• وضعیت فکی: **{diag}**")
     with c2:
         st.subheader("📐 تحلیل زوایا و رشد")
         fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
