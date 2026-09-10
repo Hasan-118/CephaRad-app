@@ -47,30 +47,11 @@ def reshape_fa(text):
     reshaped_text = arabic_reshaper.reshape(str(text))
     return get_display(reshaped_text)
 
-# --- ۱. تنظیمات صفحه و استایل (افزودن CSS جهت تنظیم راست‌چین و RTL) ---
+# --- ۱. تنظیمات صفحه و استایل ---
 st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 
 st.markdown("""
 <style>
-    /* تنظیم جهت راست‌به‌چپ برای کل اپلیکیشن */
-    .stApp {
-        direction: rtl;
-        text-align: right;
-    }
-    
-    /* تنظیم تمامی متون، عنوان‌ها و لیبل‌ها */
-    h1, h2, h3, h4, h5, h6, p, div, label, span, .stMarkdown {
-        direction: rtl;
-        text-align: right;
-    }
-
-    /* نگه‌داشتن کادرهای کد به صورت چپ‌به‌راست */
-    code, pre, .stCodeBlock {
-        direction: ltr !important;
-        text-align: left !important;
-    }
-
-    /* تنظیمات قبلی شما */
     html, body, [class*="css"]  { font-size: 14px; }
     .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
     .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
