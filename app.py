@@ -14,7 +14,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # 0. STREAMLIT PAGE CONFIG & GLOBAL STYLES
 # ==========================================
 st.set_page_config(
-    page_title="Aariz Precision Station V7.8.20",
+    page_title="Aariz Precision Station V7.8.21",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -124,13 +124,10 @@ def load_all_models():
 # 3. HELPER FUNCTIONS FOR IMAGE & 3D PROCESSING
 # ==========================================
 def load_uploaded_image(uploaded_file):
-    """
-    تابع مقاوم جهت خواندن تصاویر آپلود شده (حتی فایل‌های فشرده شده در مرورگر)
-    """
     try:
         image_bytes = uploaded_file.read()
         image = Image.open(io.BytesIO(image_bytes))
-        image = ImageOps.exif_transpose(image)  # اصلاح جهت تصویر براساس EXIF
+        image = ImageOps.exif_transpose(image)
         return image
     except Exception as e:
         st.error(f"خطا در باز کردن تصویر آپلود شده: {e}")
@@ -171,7 +168,7 @@ def process_3d_scan(file_bytes, filename):
 # 4. MAIN INTERFACE
 # ==========================================
 def main():
-    st.title("🛠 مرکز پردازش Aariz Precision Station V7.8.20")
+    st.title("🛠 مرکز پردازش Aariz Precision Station V7.8.21")
     
     # Sidebar Setup
     st.sidebar.header("⚙️ تنظیمات ورودی")
@@ -197,7 +194,8 @@ def main():
             image = load_uploaded_image(uploaded_2d)
             if image is not None:
                 st.success("✅ تصویر با موفقیت بارگذاری شد.")
-                st.image(image, caption=f"تصویر ورودی ({uploaded_2d.name})", use_column_width=True)
+                # جایگزینی use_column_width با use_container_width برای حل خطای TypeError
+                st.image(image, caption=f"تصویر ورودی ({uploaded_2d.name})", use_container_width=True)
                 
                 if st.button("🚀 اجرای پردازش هوشمند ۲D"):
                     with st.spinner("در حال تحلیل ۲۹ نقطه سئفالومتری..."):
