@@ -10,4 +10,8 @@ arabic-reshaper
 python-bidi
 fpdf2
 reportlab
-pip install trimesh pyvista stpyvista plotly numpy
+trimesh 
+pyvista 
+stpyvista 
+plotly 
+
