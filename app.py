@@ -52,10 +52,6 @@ st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 
 st.markdown("""
 <style>
-    /* راست‌چین‌سازی رابط کاربری بدون تاثیر بر عملکرد پردازشی */
-    .stApp, h1, h2, h3, h4, h5, h6, p, div, label, span, .stMarkdown { direction: rtl; text-align: right; }
-    code, pre, .stCodeBlock { direction: ltr !important; text-align: left !important; }
-    
     html, body, [class*="css"]  { font-size: 14px; }
     .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
     .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
@@ -63,7 +59,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ۲. معماری مرجع ---
+# --- ۲. معماری مرجع (بدون تغییر) ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
