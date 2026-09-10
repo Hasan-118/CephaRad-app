@@ -14,19 +14,14 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- ۱. تنظیمات صفحه و استایل (فشرده‌سازی) ---
+# --- ۱. تنظیمات صفحه و استایل ---
 st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 
 st.markdown("""
 <style>
-    /* کاهش سایز فونت کلی */
-    html, body, [class*="css"]  {
-        font-size: 14px;
-    }
-    /* کاهش فاصله عناصر */
+    html, body, [class*="css"]  { font-size: 14px; }
     .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
     .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
-    /* کاهش سایز سایدبار */
     [data-testid="stSidebar"] { min-width: 250px; max-width: 300px; }
 </style>
 """, unsafe_allow_html=True)
@@ -60,14 +55,14 @@ class CephaUNet(nn.Module):
         x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
         return self.outc(x)
 
-# --- ۳. مدیریت فایل و مدل‌ها (به‌روزرسانی شده) ---
+# --- ۳. مدیریت فایل و بارگذاری مدل‌ها ---
 def get_model_map():
     return ['checkpoint_unet_clinical_int8.pth', 'specialist_pure_model_int8.pth', 'tmj_specialist_model_int8.pth']
 
 def check_files():
     for f in get_model_map():
         if not os.path.exists(f):
-            st.error(f"❌ فایل `{f}` پیدا نشد. لطفا فایل‌های کوانتایز شده را به پوشه پروژه منتقل کنید.")
+            st.error(f"❌ فایل `{f}` پیدا نشد.")
             return False
     return True
 
@@ -90,26 +85,26 @@ def load_models():
         gc.collect()
     return loaded_models
 
-# --- ماژول افزایشی: تابع ساخت PDF ---
-def generate_clinical_pdf(patient_info, angles_data, clinical_summary, annotated_img_bytes):
+# --- ماژول ساخت PDF افزایشی ---
+def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment_plan, annotated_img_bytes):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
     )
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        'DocTitle', parent=styles['Heading1'], fontSize=18, leading=22,
-        textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10
+        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20,
+        textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=8
     )
     section_style = ParagraphStyle(
-        'SectionHeader', parent=styles['Heading2'], fontSize=13, leading=16,
+        'SectionHeader', parent=styles['Heading2'], fontSize=12, leading=15,
         textColor=colors.HexColor('#1E40AF'), spaceBefore=8, spaceAfter=4
     )
     normal_style = styles['Normal']
     elements = []
     
-    elements.append(Paragraph("Aariz Precision Station - Cephalometric Clinical Report", title_style))
-    elements.append(Spacer(1, 8))
+    elements.append(Paragraph("Aariz Precision Station - Cephalometric Report", title_style))
+    elements.append(Spacer(1, 6))
     
     info_data = [
         [Paragraph(f"<b>Patient Gender:</b> {patient_info.get('gender')}", normal_style),
@@ -120,14 +115,14 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, annotated
     info_table = Table(info_data, colWidths=[270, 270])
     info_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F3F4F6')),
-        ('PADDING', (0, 0), (-1, -1), 6),
+        ('PADDING', (0, 0), (-1, -1), 5),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('LINEBELOW', (0, -1), (-1, -1), 1, colors.HexColor('#E5E7EB')),
     ]))
     elements.append(info_table)
-    elements.append(Spacer(1, 10))
+    elements.append(Spacer(1, 8))
     
-    elements.append(Paragraph("Cephalometric Measurements", section_style))
+    elements.append(Paragraph("1. Cephalometric Measurements", section_style))
     table_content = [["Measurement", "Value", "Standard Range"]]
     for m in angles_data:
         table_content.append([m['name'], f"{m['value']} {m['unit']}", m['normal']])
@@ -137,28 +132,35 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, annotated
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
         ('ALIGN', (1, 0), (1, -1), 'CENTER'),
     ]))
     elements.append(angles_table)
-    elements.append(Spacer(1, 10))
+    elements.append(Spacer(1, 8))
     
-    elements.append(Paragraph("Clinical Diagnostics Summary", section_style))
-    diag_text = f"""
-    <b>Skeletal Classification:</b> {clinical_summary.get('diag')}<br/>
-    <b>Growth Pattern:</b> {clinical_summary.get('fma_desc')}<br/>
-    <b>Maxilla Length:</b> {clinical_summary.get('co_a')} mm | <b>Mandible Length:</b> {clinical_summary.get('co_gn')} mm<br/>
-    <b>Upper Lip Distance:</b> {clinical_summary.get('dist_li')} mm | <b>Lower Lip Distance:</b> {clinical_summary.get('dist_ls')} mm
+    elements.append(Paragraph("2. Detailed Data Analysis", section_style))
+    analysis_text = f"""
+    <b>Skeletal Classification:</b> {clinical_summary.get('diag_desc')}<br/>
+    <b>Vertical Growth Pattern:</b> {clinical_summary.get('fma_detail')}<br/>
+    <b>Maxillo-Mandibular Relationship:</b> Maxilla = {clinical_summary.get('co_a')} mm | Mandible = {clinical_summary.get('co_gn')} mm (Diff: {clinical_summary.get('diff_mcnamara')} mm)<br/>
+    <b>Soft Tissue Profile:</b> Upper Lip to E-Line = {clinical_summary.get('dist_ls')} mm | Lower Lip to E-Line = {clinical_summary.get('dist_li')} mm ({clinical_summary.get('soft_desc')})
     """
-    elements.append(Paragraph(diag_text, normal_style))
-    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(analysis_text, normal_style))
+    elements.append(Spacer(1, 8))
+
+    elements.append(Paragraph("3. Proposed Treatment Plan", section_style))
+    plan_text = ""
+    for idx, item in enumerate(treatment_plan, 1):
+        plan_text += f"<b>{idx}. {item['title']}:</b> {item['desc']}<br/>"
+    elements.append(Paragraph(plan_text, normal_style))
+    elements.append(Spacer(1, 8))
     
     if annotated_img_bytes:
-        elements.append(Paragraph("Cephalometric Landmark Overlay", section_style))
+        elements.append(Paragraph("4. Cephalometric Landmark Overlay", section_style))
         img_buf = io.BytesIO(annotated_img_bytes)
-        rl_img = RLImage(img_buf, width=280, height=280)
+        rl_img = RLImage(img_buf, width=240, height=240)
         elements.append(rl_img)
         
     doc.build(elements)
@@ -177,7 +179,7 @@ uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 
 if models is None:
     st.stop()
 
-# --- ۵. پردازش تصویر و تنظیم ابعاد (بهینه‌سازی) ---
+# --- ۵. پردازش تصویر ---
 def run_precise_prediction(img_pil, models):
     device = torch.device("cpu")
     ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
@@ -208,7 +210,7 @@ def run_precise_prediction(img_pil, models):
     gc.collect()
     return coords
 
-# --- ۶. اجرای تحلیل ---
+# --- ۶. نمایش و تنظیم لندمارک‌ها ---
 landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
 if "click_version" not in st.session_state: st.session_state.click_version = 0
@@ -277,7 +279,7 @@ if uploaded_file:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۷. محاسبات و گزارش (فشرده) ---
+    # --- ۷. محاسبات بالینی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -299,6 +301,46 @@ if uploaded_file:
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
+    # --- ۸. تولید تحلیل جامع داده‌ها و طرح درمان ---
+    w_diff = wits_mm - wits_norm
+    if w_diff > 1.5:
+        diag = "Class II Skeletal"
+        diag_desc = f"ناهنجاری اسکلتی کلاس II (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm). برآمدگی فک بالا یا عقب‌ماندگی فک پایین."
+    elif w_diff < -1.5:
+        diag = "Class III Skeletal"
+        diag_desc = f"ناهنجاری اسکلتی کلاس III (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm). جلوزدگی فک پایین یا ضعیف بودن فک بالا."
+    else:
+        diag = "Class I Skeletal"
+        diag_desc = f"رابطه اسکلتی نرمال کلاس I (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm)."
+
+    if fma > 32:
+        fma_desc = "Vertical Growing (Hyperdivergent)"
+        fma_detail = f"الگوی رشد عمودی یا High Angle (زاویه FMA = {fma}°). تمایل به اوپن بایت و افزایش ارتفاع تحتانی صورت."
+    elif fma < 20:
+        fma_desc = "Horizontal Growing (Hypodivergent)"
+        fma_detail = f"الگوی رشد افقی یا Low Angle (زاویه FMA = {fma}°). تمایل به دیپ بایت و عضلات جویدن قوی."
+    else:
+        fma_desc = "Normal Divergent"
+        fma_detail = f"الگوی رشد نرمال و متوازن (زاویه FMA = {fma}°)."
+
+    soft_desc = "پروفایل عقب‌رفته (Retrusive Lip)" if dist_ls < -2 else "پروفایل برجسته (Protrusive Lip)" if dist_ls > 2 else "پروفایل متوازن (Balanced Soft Tissue)"
+
+    # منطق تولید طرح درمان هوشمند
+    treatment_plan = []
+    if "Class II" in diag:
+        if "Vertical" in fma_desc:
+            treatment_plan.append({"title": "کنترل رشد عمودی و ساپورت کلاس II", "desc": "استفاده از هدگیر یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II جهت جلوگیری از چرخش ساعت‌گرد فک پایین."})
+        else:
+            treatment_plan.append({"title": "تحریک رشد/پیش‌آوردن فک پایین", "desc": "استفاده از دستگاه‌های فانکشنال (مانند Twin Block یا Herbst) در صورت بیمار در حال رشد، یا جراحی Orthognathic (BSSO) در بزرگسالان."})
+    elif "Class III" in diag:
+        treatment_plan.append({"title": "پروتراکشن فک بالا یا اصلاح کلاس III", "desc": "استفاده از Face Mask / Reverse Pull Headgear در سنین رشد، یا جراحی دو فک (Maxillary Advancement / Mandibular Setback) در سنین بالاتر."})
+    else:
+        treatment_plan.append({"title": "ارتودنسی کاموفلاژ / مرتب‌سازی دندانی", "desc": "تمرکز بر ردیف‌سازی دندان‌ها، اصلاح شلوغی (Crowding) و تنطیم قوس‌های دندانی بدون نیاز به مداخله اسکلتی شدید."})
+
+    if dist_ls > 3 or dist_li > 3:
+        treatment_plan.append({"title": "ارزیابی کشیدن دندان (Extraction Evaluation)", "desc": "به دلیل برجستگی لب‌ها نسبت به خط E، بررسی کشیدن پری‌مولرها جهت عقب بردن دندان‌های قدامی و بهبود عقب‌رفتگی لب توصیه می‌شود."})
+
+    # --- ۹. نمایش متریک‌ها و تحلیل در UI ---
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Steiner (ANB)", f"{anb}°")
     m2.metric("Wits", f"{round(wits_mm, 2)} mm")
@@ -306,24 +348,33 @@ if uploaded_file:
     m4.metric("Downs (FMA)", f"{fma}°")
 
     st.divider()
-    st.header(f"📑 گزارش بالینی")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("👄 بافت نرم")
-        st.write(f"• لب بالا: **{dist_li} mm**")
-        st.write(f"• لب پایین: **{dist_ls} mm**")
-        st.subheader("💡 درمان")
-        w_diff = wits_mm - wits_norm
-        diag = "Class II" if w_diff > 1.5 else "Class III" if w_diff < -1.5 else "Class I"
-        st.write(f"• وضعیت: **{diag}**")
-    with c2:
-        st.subheader("📐 زوایا")
-        fma_desc = "Vertical" if fma > 32 else "Horizontal" if fma < 20 else "Normal"
-        st.write(f"• الگو: **{fma_desc}**")
-        st.write(f"• طول فک بالا: {round(co_a, 1)} mm")
-        st.write(f"• طول فک پایین: {round(co_gn, 1)} mm")
+    st.header("📑 گزارش بالینی و آنالیز جامع")
+    
+    tab1, tab2 = st.tabs(["🔍 تحلیل تفصیلی داده‌ها", "💡 پیشنهاد طرح درمان"])
+    
+    with tab1:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🦴 وضعیت اسکلتی و عمودی")
+            st.write(f"• **تشخیص اسکلتی:** {diag}")
+            st.caption(diag_desc)
+            st.write(f"• **الگوی رشد:** {fma_desc}")
+            st.caption(fma_detail)
+        with c2:
+            st.subheader("👄 ابعاد فکین و بافت نرم")
+            st.write(f"• **طول فک بالا (Co-A):** {round(co_a, 1)} mm")
+            st.write(f"• **طول فک پایین (Co-Gn):** {round(co_gn, 1)} mm")
+            st.write(f"• **فاصله لب بالا تا خط E:** {dist_ls} mm")
+            st.write(f"• **فاصله لب پایین تا خط E:** {dist_li} mm")
+            st.caption(f"تفسیر بافت نرم: {soft_desc}")
 
-    # --- تولید و دکمه دانلود PDF ---
+    with tab2:
+        st.subheader("🎯 دستورالعمل‌های پیشنهادی درمان")
+        for idx, item in enumerate(treatment_plan, 1):
+            st.markdown(f"**{idx}. {item['title']}**")
+            st.write(item['desc'])
+
+    # --- ۱۰. تولید و دکمه دانلود PDF ---
     st.markdown("---")
     
     patient_info_pdf = {
@@ -341,21 +392,24 @@ if uploaded_file:
     
     clinical_summary_pdf = {
         'diag': diag,
-        'fma_desc': fma_desc,
+        'diag_desc': diag_desc,
+        'fma_detail': fma_detail,
         'co_a': round(co_a, 1),
         'co_gn': round(co_gn, 1),
+        'diff_mcnamara': diff_mcnamara,
         'dist_li': dist_li,
-        'dist_ls': dist_ls
+        'dist_ls': dist_ls,
+        'soft_desc': soft_desc
     }
     
     img_byte_arr = io.BytesIO()
     draw_img.save(img_byte_arr, format='PNG')
     annotated_img_bytes = img_byte_arr.getvalue()
     
-    pdf_bytes = generate_clinical_pdf(patient_info_pdf, angles_data_pdf, clinical_summary_pdf, annotated_img_bytes)
+    pdf_bytes = generate_clinical_pdf(patient_info_pdf, angles_data_pdf, clinical_summary_pdf, treatment_plan, annotated_img_bytes)
     
     st.download_button(
-        label="📄 دانلود گزارش کامل بالینی (PDF)",
+        label="📄 دانلود گزارش کامل بالینی و طرح درمان (PDF)",
         data=pdf_bytes,
         file_name=f"Aariz_Clinical_Report_{uploaded_file.name.split('.')[0]}.pdf",
         mime="application/pdf",
