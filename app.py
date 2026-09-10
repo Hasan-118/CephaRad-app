@@ -44,6 +44,19 @@ try:
 except ImportError:
     render_intraoral_3d_tab = None
 
+# --- تابع بهینه‌سازی و فشرده‌سازی تصویر برای افزایش سرعت آپلود ---
+def optimize_image_for_upload(uploaded_file, max_dimension=1200, quality=85):
+    img = Image.open(uploaded_file)
+    w, h = img.size
+    if max(w, h) > max_dimension:
+        ratio = max_dimension / float(max(w, h))
+        new_size = (int(w * ratio), int(h * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+    img_io = io.BytesIO()
+    img.convert("RGB").save(img_io, format="JPEG", quality=quality, optimize=True)
+    img_io.seek(0)
+    return Image.open(img_io)
+
 # --- آماده‌سازی و ثبت فونت Vazir برای ReportLab ---
 def register_vazir_font():
     font_path = "Vazir.ttf"
@@ -238,7 +251,6 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
 tab_ceph, tab_3d = st.tabs(["📐 آنالیز سئفالومتری (۲D)", "🦷 آنالیز اسکن داخل دهانی (۳D)"])
 
 with tab_ceph:
-    # --- اجرای منطق اصلی برنامه سئفالومتری ---
     models = load_models()
 
     st.sidebar.title("🛠 مرکز پردازش Aariz")
@@ -288,7 +300,7 @@ with tab_ceph:
 
     if uploaded_file:
         if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-            st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
+            st.session_state.raw_img = optimize_image_for_upload(uploaded_file)
             st.session_state.file_id = uploaded_file.name
             with st.spinner("🧠 در حال تحلیل با مدل‌های بهینه‌شده..."):
                 st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
