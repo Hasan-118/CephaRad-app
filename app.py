@@ -1,8 +1,24 @@
+import os
+
+# --- ساخت خودکار پوشه .streamlit و تنظیمات config.toml ---
+streamlit_dir = ".streamlit"
+config_file = os.path.join(streamlit_dir, "config.toml")
+
+if not os.path.exists(streamlit_dir):
+    os.makedirs(streamlit_dir)
+
+if not os.path.exists(config_file):
+    with open(config_file, "w", encoding="utf-8") as f:
+        f.write("""[server]
+maxUploadSize = 200
+enableCORS = false
+enableXsrfProtection = false
+""")
+
 import streamlit as st
 import torch
 import torch.nn as nn
 import numpy as np
-import os
 import gc
 import io
 import urllib.request
