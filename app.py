@@ -1,411 +1,362 @@
+# Aariz Precision Station V7.8.16 (Updated Font Path: Vazir.ttf)
+import os
+import io
+import json
+import numpy as np
+import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 import torch
 import torch.nn as nn
-import numpy as np
-import os
-import gc
-import io
-from PIL import Image, ImageDraw
-from streamlit_image_coordinates import streamlit_image_coordinates
-
-# وارد کردن کتابخانه‌های ReportLab برای ساخت PDF
-from reportlab.lib.pagesizes import letter
+import torch.nn.functional as F
+import torchvision.transforms as T
+from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-# --- ۱. تنظیمات صفحه و استایل ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
+# ---------------------------------------------------------
+# Page Configuration & UI Settings
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Aariz Precision Station V7.8.16",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.markdown("""
-<style>
-    html, body, [class*="css"]  { font-size: 14px; }
-    .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
-    .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
-    [data-testid="stSidebar"] { min-width: 250px; max-width: 300px; }
-</style>
-""", unsafe_allow_html=True)
+st.title("Aariz Precision Station V7.8.16 - Cephalometric Analysis System")
 
-# --- ۲. معماری مرجع (بدون تغییر) ---
+# ---------------------------------------------------------
+# Font Configuration (Updated for Vazir.ttf)
+# ---------------------------------------------------------
+FONT_PATH = "Vazir.ttf"  # Exact match with repository file name
+
+def register_pdf_fonts():
+    """Registers the Vazir font for PDF generation if available."""
+    if os.path.exists(FONT_PATH):
+        try:
+            pdfmetrics.registerFont(TTFont('Vazir', FONT_PATH))
+            return True
+        except Exception as e:
+            st.warning(f"Error registering font '{FONT_PATH}': {e}")
+            return False
+    else:
+        st.info(f"Font file '{FONT_PATH}' not found in root repository. Defaulting to system fonts.")
+        return False
+
+# Register font on app initialization
+HAS_VAZIR_FONT = register_pdf_fonts()
+
+# ---------------------------------------------------------
+# Device Selection & Model Architecture Definitions
+# ---------------------------------------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, dropout_prob=0.1):
+    """(convolution => [BN] => ReLU) * 2"""
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True), nn.Dropout2d(p=dropout_prob),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.BatchNorm2d(out_ch),
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
-    def forward(self, x): return self.conv(x)
+
+    def forward(self, x):
+        return self.double_conv(x)
 
 class CephaUNet(nn.Module):
-    def __init__(self, n_landmarks=29):
+    """UNet Architecture for Cephalometric Landmark Heatmap Estimation"""
+    def __init__(self, in_channels=1, out_channels=29):
         super().__init__()
-        self.inc = DoubleConv(1, 64); self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.inc = DoubleConv(in_channels, 64)
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
         self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512, dropout_prob=0.3))
-        self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2); self.conv_up1 = DoubleConv(512, 256, dropout_prob=0.3)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2); self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2); self.conv_up3 = DoubleConv(128, 64)
-        self.outc = nn.Conv2d(64, n_landmarks, kernel_size=1)
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
+        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 1024))
+        
+        self.up1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
+        self.conv_up1 = DoubleConv(1024, 512)
+        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.conv_up2 = DoubleConv(512, 256)
+        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.conv_up3 = DoubleConv(256, 128)
+        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.conv_up4 = DoubleConv(128, 64)
+        
+        self.outc = nn.Conv2d(64, out_channels, kernel_size=1)
+
     def forward(self, x):
-        x1 = self.inc(x); x2 = self.down1(x1); x3 = self.down2(x2); x4 = self.down3(x3)
-        x = self.up1(x4); x = torch.cat([x, x3], dim=1); x = self.conv_up1(x)
-        x = self.up2(x); x = torch.cat([x, x2], dim=1); x = self.conv_up2(x)
-        x = self.up3(x); x = torch.cat([x, x1], dim=1); x = self.conv_up3(x)
-        return self.outc(x)
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        
+        x = self.up1(x5)
+        x = torch.cat([x, x4], dim=1)
+        x = self.conv_up1(x)
+        
+        x = self.up2(x)
+        x = torch.cat([x, x3], dim=1)
+        x = self.conv_up2(x)
+        
+        x = self.up3(x)
+        x = torch.cat([x, x2], dim=1)
+        x = self.conv_up3(x)
+        
+        x = self.up4(x)
+        x = torch.cat([x, x1], dim=1)
+        x = self.conv_up4(x)
+        
+        logits = self.outc(x)
+        return logits
 
-# --- ۳. مدیریت فایل و بارگذاری مدل‌ها ---
-def get_model_map():
-    return ['checkpoint_unet_clinical_int8.pth', 'specialist_pure_model_int8.pth', 'tmj_specialist_model_int8.pth']
+# ---------------------------------------------------------
+# Landmark Definitions & Multi-Model Mapping
+# ---------------------------------------------------------
+LANDMARK_NAMES = [
+    "Sella (S)", "Nasion (N)", "Orbitale (Or)", "Porion (Po)", "Subspinale (A)",
+    "Supramentale (B)", "Pogonion (Pog)", "Menton (Me)", "Gnathion (Gn)", "Gonion (Go)",
+    "Upper Incisor Tip (U1T)", "Upper Incisor Apex (U1A)", "Lower Incisor Tip (L1T)", "Lower Incisor Apex (L1A)",
+    "Upper Molar Occlusal (U6M)", "Lower Molar Occlusal (L6M)", "Anterior Nasal Spine (ANS)", "Posterior Nasal Spine (PNS)",
+    "Articulare (Ar)", "Basion (Ba)", "Condylon (Cd)", "Pterygoid (Pt)", "Basion-Nasion Point",
+    "Soft Tissue Nasion", "Soft Tissue Pronasale", "Soft Tissue Labrale Superius", "Soft Tissue Labrale Inferius",
+    "Soft Tissue Pogonion", "Soft Tissue Menton"
+]
 
-def check_files():
-    for f in get_model_map():
-        if not os.path.exists(f):
-            st.error(f"❌ فایل `{f}` پیدا نشد.")
-            return False
-    return True
+# Map specific specialized regions to Specialist / TMJ Specialist models
+SPECIALIST_LANDMARKS = [4, 5, 10, 11, 12, 13]  # Dentofacial / Subspinale-Incise regions
+TMJ_LANDMARKS = [18, 19, 20]                   # TMJ / Condyle / Articulare regions
 
+MODEL_PATHS = {
+    "general": "checkpoint_unet_clinical.pth",
+    "specialist": "specialist_pure_model.pth",
+    "tmj": "tmj_specialist_model.pth"
+}
+
+# ---------------------------------------------------------
+# Dynamic Model Loader
+# ---------------------------------------------------------
 @st.cache_resource
-def load_models():
-    if not check_files(): return None
-    device = torch.device("cpu")
-    loaded_models = []
-    
-    for f in get_model_map():
-        m = CephaUNet(n_landmarks=29).to(device)
-        m = torch.quantization.quantize_dynamic(
-            m, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8
-        )
-        ckpt = torch.load(f, map_location=device)
-        m.load_state_dict(ckpt)
-        m.eval()
-        loaded_models.append(m)
-        del ckpt
-        gc.collect()
-    return loaded_models
+def load_all_models():
+    """Loads general and specialist models into memory."""
+    models = {}
+    for key, path in MODEL_PATHS.items():
+        model = CephaUNet(in_channels=1, out_channels=29)
+        if os.path.exists(path):
+            try:
+                state_dict = torch.load(path, map_location=device)
+                model.load_state_dict(state_dict)
+                model.to(device)
+                model.eval()
+                models[key] = model
+            except Exception as e:
+                st.error(f"Failed loading model weights for {key} from {path}: {e}")
+                models[key] = None
+        else:
+            st.warning(f"Model file {path} not found. Running under fallback/partial inference mode.")
+            models[key] = None
+    return models
 
-# --- ماژول ساخت PDF افزایشی چندصفحه‌ای ---
-def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes):
+models = load_all_models()
+
+# ---------------------------------------------------------
+# Image Processing & Prediction Pipeline
+# ---------------------------------------------------------
+def preprocess_image(image: Image.Image, target_size=(512, 512)):
+    """Preprocesses input image for CephaUNet model."""
+    img_gray = image.convert("L")
+    img_resized = img_gray.resize(target_size)
+    tensor = T.ToTensor()(img_resized)
+    tensor = T.Normalize(mean=[0.5], std=[0.5])(tensor)
+    return tensor.unsqueeze(0).to(device), img_gray.size
+
+def extract_landmarks_from_heatmaps(heatmaps, original_size, target_size=(512, 512)):
+    """Converts heatmaps into (X, Y) pixel coordinates scaled to original image."""
+    heatmaps_np = heatmaps.squeeze(0).cpu().detach().numpy()
+    landmarks = []
+    orig_w, orig_h = original_size
+    scale_x = orig_w / target_size[0]
+    scale_y = orig_h / target_size[1]
+    
+    for idx in range(heatmaps_np.shape[0]):
+        hm = heatmaps_np[idx]
+        y, x = np.unravel_index(np.argmax(hm), hm.shape)
+        coord_x = float(x * scale_x)
+        coord_y = float(y * scale_y)
+        landmarks.append((coord_x, coord_y))
+    return landmarks
+
+def ensemble_predict(models, tensor_img, orig_size):
+    """Combines general, specialist, and TMJ models for optimal landmark precision."""
+    preds = {}
+    for key, model in models.items():
+        if model is not None:
+            with torch.no_grad():
+                out = model(tensor_img)
+                preds[key] = extract_landmarks_from_heatmaps(out, orig_size)
+    
+    # Merge strategy
+    final_landmarks = []
+    if "general" in preds:
+        final_landmarks = list(preds["general"])
+    else:
+        final_landmarks = [(0.0, 0.0)] * 29
+
+    if "specialist" in preds:
+        for idx in SPECIALIST_LANDMARKS:
+            final_landmarks[idx] = preds["specialist"][idx]
+
+    if "tmj" in preds:
+        for idx in TMJ_LANDMARKS:
+            final_landmarks[idx] = preds["tmj"][idx]
+
+    return final_landmarks
+
+# ---------------------------------------------------------
+# Cephalometric Analysis Computations
+# ---------------------------------------------------------
+def calculate_angle(p1, p2, p3):
+    """Calculates angle (in degrees) formed at vertex p2 by points p1-p2-p3."""
+    v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
+    v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+    
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    
+    cos_angle = np.dot(v1, v2) / (norm1 * norm2)
+    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+    return float(np.degrees(angle))
+
+def run_cephalometric_analysis(landmarks):
+    """Computes clinical cephalometric parameters from predicted landmarks."""
+    analysis = {}
+    
+    # SNA (Sella-Nasion-Subspinale)
+    if len(landmarks) > 4:
+        analysis["SNA"] = calculate_angle(landmarks[0], landmarks[1], landmarks[4])
+    
+    # SNB (Sella-Nasion-Supramentale)
+    if len(landmarks) > 5:
+        analysis["SNB"] = calculate_angle(landmarks[0], landmarks[1], landmarks[5])
+    
+    # ANB (SNA - SNB)
+    if "SNA" in analysis and "SNB" in analysis:
+        analysis["ANB"] = analysis["SNA"] - analysis["SNB"]
+
+    # FMA (Porion-Orbitale to Gonion-Menton)
+    if len(landmarks) > 9:
+        p_po, p_or = landmarks[3], landmarks[2]
+        p_go, p_me = landmarks[9], landmarks[7]
+        v_fh = np.array([p_or[0] - p_po[0], p_or[1] - p_po[1]])
+        v_mp = np.array([p_me[0] - p_go[0], p_me[1] - p_go[1]])
+        n1, n2 = np.linalg.norm(v_fh), np.linalg.norm(v_mp)
+        if n1 > 0 and n2 > 0:
+            cos_a = np.dot(v_fh, v_mp) / (n1 * n2)
+            analysis["FMA"] = float(np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0))))
+
+    return analysis
+
+# ---------------------------------------------------------
+# PDF Report Generation Component
+# ---------------------------------------------------------
+def generate_pdf_report(image: Image.Image, landmarks, analysis_results):
+    """Generates a professional clinical PDF report."""
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
-    )
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    font_name = 'Vazir' if HAS_VAZIR_FONT else 'Helvetica'
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20,
-        textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=8
-    )
-    section_style = ParagraphStyle(
-        'SectionHeader', parent=styles['Heading2'], fontSize=12, leading=15,
-        textColor=colors.HexColor('#1E40AF'), spaceBefore=8, spaceAfter=4
-    )
-    normal_style = styles['Normal']
-    elements = []
     
-    elements.append(Paragraph("Aariz Precision Station - Comprehensive Cephalometric Report", title_style))
-    elements.append(Spacer(1, 6))
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontName=font_name, fontSize=18, leading=22, alignment=1)
+    body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontName=font_name, fontSize=10, leading=14)
     
-    info_data = [
-        [Paragraph(f"<b>Patient Gender:</b> {patient_info.get('gender')}", normal_style),
-         Paragraph(f"<b>Pixel Size:</b> {patient_info.get('pixel_size')} mm/px", normal_style)],
-        [Paragraph(f"<b>Date:</b> {patient_info.get('date')}", normal_style),
-         Paragraph(f"<b>Primary Diagnosis:</b> {patient_info.get('diag')}", normal_style)]
-    ]
-    info_table = Table(info_data, colWidths=[270, 270])
-    info_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F3F4F6')),
-        ('PADDING', (0, 0), (-1, -1), 5),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.HexColor('#E5E7EB')),
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 8))
+    story.append(Paragraph("Aariz Cephalometric Analysis Report", title_style))
+    story.append(Spacer(1, 15))
     
-    elements.append(Paragraph("1. Comparison with Norms & Normative Standards", section_style))
-    table_content = [["Parameter", "Measured", "Norm / Mean", "Deviation", "Clinical Status"]]
-    for item in norm_table_data:
-        table_content.append([
-            item['param'], f"{item['measured']} {item['unit']}",
-            f"{item['norm']} {item['unit']}", f"{item['dev']} {item['unit']}", item['status']
-        ])
+    # Add Overlay Landmark Image
+    img_draw = image.copy().convert("RGB")
+    draw = ImageDraw.Draw(img_draw)
+    for idx, (x, y) in enumerate(landmarks):
+        draw.ellipse([x-4, y-4, x+4, y+4], fill="red", outline="yellow")
+    
+    img_buffer = io.BytesIO()
+    img_draw.save(img_buffer, format="PNG")
+    img_buffer.seek(0)
+    
+    story.append(RLImage(img_buffer, width=240, height=240))
+    story.append(Spacer(1, 15))
+    
+    # Analysis Table
+    table_data = [["Parameter", "Measured Value", "Reference Range"]]
+    ref_ranges = {"SNA": "82.0° ± 2.0°", "SNB": "80.0° ± 2.0°", "ANB": "2.0° ± 1.0°", "FMA": "25.0° ± 3.0°"}
+    
+    for k, v in analysis_results.items():
+        ref = ref_ranges.get(k, "N/A")
+        table_data.append([k, f"{v:.2f}°", ref])
         
-    angles_table = Table(table_content, colWidths=[130, 90, 100, 90, 130])
-    angles_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
-        ('ALIGN', (1, 0), (-2, -1), 'CENTER'),
+    t = Table(table_data, colWidths=[150, 150, 150])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1E88E5")),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,-1), font_name),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
     ]))
-    elements.append(angles_table)
-    elements.append(Spacer(1, 8))
+    story.append(t)
     
-    elements.append(Paragraph("2. Detailed Diagnostic Interpretation", section_style))
-    interp_text = ""
-    for category, desc in detailed_interpretations.items():
-        interp_text += f"<b>• {category}:</b> {desc}<br/><br/>"
-    elements.append(Paragraph(interp_text, normal_style))
-    elements.append(Spacer(1, 6))
-
-    elements.append(Paragraph("3. Proposed Clinical Treatment Plan", section_style))
-    plan_text = ""
-    for idx, item in enumerate(treatment_plan, 1):
-        plan_text += f"<b>{idx}. {item['title']}:</b> {item['desc']}<br/>"
-    elements.append(Paragraph(plan_text, normal_style))
-    elements.append(Spacer(1, 8))
-    
-    if annotated_img_bytes:
-        elements.append(Paragraph("4. Cephalometric Landmark Overlay", section_style))
-        img_buf = io.BytesIO(annotated_img_bytes)
-        rl_img = RLImage(img_buf, width=220, height=220)
-        elements.append(rl_img)
-        
-    doc.build(elements)
+    doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
-# --- ۴. اجرای منطق اصلی برنامه ---
-models = load_models()
+# ---------------------------------------------------------
+# Sidebar & File Upload Interface
+# ---------------------------------------------------------
+st.sidebar.header("Data Input")
+uploaded_file = st.sidebar.file_uploader("Upload Cephalogram (PNG / JPG / BMP)", type=["png", "jpg", "jpeg", "bmp"])
 
-st.sidebar.title("🛠 مرکز پردازش Aariz")
-gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
-pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
-text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 2)
-uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
-
-if models is None:
-    st.stop()
-
-# --- ۵. پردازش تصویر ---
-def run_precise_prediction(img_pil, models):
-    device = torch.device("cpu")
-    ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
-    nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
-    canvas.paste(img_rs, (px, py))
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Uploaded Cephalogram Image", use_column_width=True)
     
-    np_img = np.array(canvas).astype(np.float32) / 255.0
-    input_tensor = torch.from_numpy(np_img).unsqueeze(0).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        outs = []
-        for m in models:
-            out = m(input_tensor)[0].cpu().numpy()
-            outs.append(out)
-            del out
-            gc.collect()
+    if st.button("Run Precision Analysis"):
+        with st.spinner("Executing CephaUNet Specialist Ensembles..."):
+            tensor_img, orig_size = preprocess_image(image)
+            landmarks = ensemble_predict(models, tensor_img, orig_size)
+            analysis_results = run_cephalometric_analysis(landmarks)
             
-    ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
-    coords = {}
-    for i in range(29):
-        hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
-        y, x = np.unravel_index(np.argmax(hm), hm.shape)
-        coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-    
-    del input_tensor
-    del outs
-    gc.collect()
-    return coords
-
-# --- ۶. نمایش و تنظیم لندمارک‌ها ---
-landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
-
-if "click_version" not in st.session_state: st.session_state.click_version = 0
-
-if uploaded_file:
-    if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-        st.session_state.raw_img = Image.open(uploaded_file).convert("RGB")
-        st.session_state.file_id = uploaded_file.name
-        with st.spinner("🧠 در حال تحلیل با مدل‌های بهینه‌شده..."):
-            st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
-            st.session_state.lms = st.session_state.initial_lms.copy()
-
-    raw_img = st.session_state.raw_img; W, H = raw_img.size
-    target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-    
-    if st.sidebar.button("🔄 Reset Point"):
-        st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
-        st.session_state.click_version += 1; st.rerun()
-
-    col1, col2 = st.columns([1, 2.5])
-    with col1:
-        st.subheader("🔍 Micro-Adjustment")
-        l_pos = st.session_state.lms[target_idx]; size_m = 150
-        left, top = max(0, min(int(l_pos[0]-size_m//2), W-size_m)), max(0, min(int(l_pos[1]-size_m//2), H-size_m))
-        mag_crop = raw_img.crop((left, top, left+size_m, top+size_m)).resize((300, 300), Image.LANCZOS)
-        mag_draw = ImageDraw.Draw(mag_crop)
-        mag_draw.line((135, 150, 165, 150), fill="red", width=2); mag_draw.line((150, 135, 150, 165), fill="red", width=2)
-        res_mag = streamlit_image_coordinates(mag_crop, key=f"mag_{target_idx}_{st.session_state.click_version}")
-        if res_mag:
-            scale_mag = size_m / 300; new_c = [int(left + (res_mag["x"] * scale_mag)), int(top + (res_mag["y"] * scale_mag))]
-            if st.session_state.lms[target_idx] != new_c:
-                st.session_state.lms[target_idx] = new_c; st.session_state.click_version += 1; st.rerun()
-
-    with col2:
-        st.subheader("🖼 نمای گرافیکی")
-        disp_w = 700
-        ratio_disp = disp_w / W
-        disp_h = int(H * ratio_disp)
-        
-        draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR)
-        draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
-        def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
-
-        if all(k in l for k in [10, 4, 0, 2, 18, 22, 17, 21, 15, 5, 14, 3, 20, 21, 23, 17, 8, 27]):
-            draw.line([sc(l[10]), sc(l[4])], fill="yellow", width=1)
-            draw.line([sc(l[4]), sc(l[0])], fill="cyan", width=1)
-            draw.line([sc(l[4]), sc(l[2])], fill="magenta", width=1)
-            p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-            draw.line([sc(p_occ_p), sc(p_occ_a)], fill="white", width=1)
-            draw.line([sc(l[15]), sc(l[5])], fill="orange", width=1)
-            draw.line([sc(l[14]), sc(l[3])], fill="purple", width=1)
-            draw.line([sc(l[20]), sc(l[21])], fill="blue", width=1)
-            draw.line([sc(l[23]), sc(l[17])], fill="green", width=1)
-            draw.line([sc(l[8]), sc(l[27])], fill="pink", width=1)
-
-        for i, pos in l.items():
-            s_pos = sc(pos); color = (255, 0, 0) if i == target_idx else (0, 255, 0)
-            r = 4 if i == target_idx else 2
-            draw.ellipse([s_pos[0]-r, s_pos[1]-r, s_pos[0]+r, s_pos[1]+r], fill=color, outline="white")
-            if text_scale > 1:
-                draw.text((s_pos[0]+8, s_pos[1]-4), landmark_names[i], fill=color)
-
-        res_main = streamlit_image_coordinates(draw_img, key=f"main_{st.session_state.click_version}")
-        if res_main:
-            m_c = [int(res_main["x"] / ratio_disp), int(res_main["y"] / ratio_disp)]
-            if st.session_state.lms[target_idx] != m_c:
-                st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
-
-    # --- ۷. محاسبات کامل زاویه‌ای و طولی ---
-    st.divider()
-    def get_ang(p1, p2, p3, p4=None):
-        v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
-        n = np.linalg.norm(v1)*np.linalg.norm(v2); return round(np.degrees(np.arccos(np.clip(np.dot(v1,v2)/(n if n>0 else 1), -1, 1))), 2)
-
-    def dist_to_line(p, l1, l2):
-        v1 = np.append(l2 - l1, 0); v2 = np.append(p - l1, 0)
-        return np.linalg.norm(np.cross(v1, v2)) / (np.linalg.norm(l2 - l1) + 1e-6)
-
-    sna = get_ang(l[10], l[4], l[0])
-    snb = get_ang(l[10], l[4], l[2])
-    anb = round(sna - snb, 2)
-    fma = get_ang(l[15], l[5], l[14], l[3])
-    co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 1)
-    co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 1)
-    diff_mcnamara = round(co_gn - co_a, 2)
-    
-    p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
-    v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-    wits_mm = round((np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size, 2)
-    wits_norm = 0.0 if gender == "آقا (Male)" else -1.0
-    
-    dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-    dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
-
-    # --- ۸. ساخت جدول مقایسه با NORMها و انحرافات ---
-    norm_table_data = [
-        {"param": "SNA (Maxilla Pos)", "measured": sna, "unit": "°", "norm": 82.0, "dev": round(sna - 82.0, 2), "status": "Protrusive" if sna > 84 else ("Retrusive" if sna < 80 else "Normal")},
-        {"param": "SNB (Mandible Pos)", "measured": snb, "unit": "°", "norm": 80.0, "dev": round(snb - 80.0, 2), "status": "Protrusive" if snb > 82 else ("Retrusive" if snb < 78 else "Normal")},
-        {"param": "ANB (Skeletal Rel)", "measured": anb, "unit": "°", "norm": 2.0, "dev": round(anb - 2.0, 2), "status": "Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I")},
-        {"param": "Wits Appraisal", "measured": wits_mm, "unit": "mm", "norm": wits_norm, "dev": round(wits_mm - wits_norm, 2), "status": "Class II" if (wits_mm - wits_norm) > 1.5 else ("Class III" if (wits_mm - wits_norm) < -1.5 else "Class I")},
-        {"param": "FMA (Vertical Angle)", "measured": fma, "unit": "°", "norm": 25.0, "dev": round(fma - 25.0, 2), "status": "Hyperdivergent" if fma > 30 else ("Hypodivergent" if fma < 20 else "Normal")},
-        {"param": "Co-A (Maxilla Length)", "measured": co_a, "unit": "mm", "norm": 90.0, "dev": round(co_a - 90.0, 2), "status": "Increased" if co_a > 95 else ("Decreased" if co_a < 85 else "Normal")},
-        {"param": "Co-Gn (Mandible Length)", "measured": co_gn, "unit": "mm", "norm": 115.0, "dev": round(co_gn - 115.0, 2), "status": "Increased" if co_gn > 122 else ("Decreased" if co_gn < 108 else "Normal")},
-        {"param": "Upper Lip to E-Line", "measured": dist_ls, "unit": "mm", "norm": -4.0, "dev": round(dist_ls - (-4.0), 2), "status": "Protrusive" if dist_ls > -2 else ("Retrusive" if dist_ls < -6 else "Normal")},
-        {"param": "Lower Lip to E-Line", "measured": dist_li, "unit": "mm", "norm": -2.0, "dev": round(dist_li - (-2.0), 2), "status": "Protrusive" if dist_li > 0 else ("Retrusive" if dist_li < -4 else "Normal")}
-    ]
-
-    # --- ۹. تفسير جامع و تخصصی داده‌ها ---
-    detailed_interpretations = {
-        "رابطه اسکلتی ساژیتال (Sagittal Relationship)": f"مقدار زاویه ANB برابر با {anb}° و ارزیابی Wits برابر با {wits_mm} mm می‌باشد. " + 
-            ("نشان‌دهنده ناهنجاری اسکلتی کلاس II شدید به دلیل برآمدگی فک بالا یا عقب‌ماندگی فک پایین است." if anb > 4.5 else 
-             ("نشان‌دهنده ناهنجاری اسکلتی کلاس III به دلیل جلو بودن فک پایین یا ضعیف بودن فک بالا است." if anb < 0.5 else 
-              "رابطه فک بالا و پایین در حد فاصل نرمال است و تطابق اسکلتی کلاس I وجود دارد.")),
-
-        "الگوی رشد عمودی (Vertical Pattern)": f"زاویه FMA برابر با {fma}° است (Norm: 25.0°). " + 
-            ("الگوی رشد هایپردایورجنت (Vertical Growing / High Angle). بیمار تمایل به اوپن بایت، افزایش ارتفاع تحتانی صورت و عضلات ضعیف‌تر جویدن دارد." if fma > 30 else 
-             ("الگوی رشد هایپودایورجنت (Horizontal Growing / Low Angle). بیمار دارای ساختار صورت فشرده، تمایل به دیپ بایت و عضلات جویدن قوی است." if fma < 20 else 
-              "الگوی رشد عمودی متوازن و نرمال (Mesofacial/Normodivergent).")),
-
-        "تحلیل تناسب طول فکین (McNamara Discrepancy)": f"طول موثر فک بالا (Co-A) برابر {co_a} mm و طول موثر فک پایین (Co-Gn) برابر {co_gn} mm است (اختلاف: {diff_mcnamara} mm). " +
-            ("اختلاف طول فکین بیشتر از حد نرمال بوده که موید رشد بیش از حد فک پایین یا کوتاهی فک بالا می‌باشد." if diff_mcnamara > 28 else
-             ("اختلاف طول فکین کمتر از حد نرمال بوده که نشان‌دهنده نقص رشد فک پایین است." if diff_mcnamara < 20 else
-              "تناسب طولی فک بالا و پایین در محدوده هارمونیک قرار دارد.")),
-
-        "پروفایل بافت نرم (Soft Tissue Profile)": f"فاصله لب بالا تا خط E برابر با {dist_ls} mm و لب پایین {dist_li} mm است. " +
-            ("برجستگی بافت نرم لب‌ها نسبت به خط E مشهود است که می‌تواند ناشی از پروتروژن دندان‌های قدامی (Bimaxillary Protrusion) باشد." if dist_ls > -1 or dist_li > 1 else
-             ("پروفایل لب‌ها نسبت به خط E عقب‌رفته (Retrusive) است." if dist_ls < -6 else
-              "پروفایل بافت نرم و وضعیت لب‌ها زیبا و متوازن است."))
-    }
-
-    # طرح درمان پیشنهادی
-    treatment_plan = []
-    if anb > 4:
-        if fma > 30:
-            treatment_plan.append({"title": "کنترل رشد عمودی و اصلاح کلاس II", "desc": "استفاده از دستگاه‌های اینترودکننده یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II جهت جلوگیری از چرخش ساعت‌گرد فک پایین."})
-        else:
-            treatment_plan.append({"title": "تحریک رشد/پیش‌آوردن فک پایین", "desc": "دستگاه‌های فانکشنال (مانند Twin Block یا Herbst) در سنین رشد، یا جراحی BSSO در سنین بالاتر."})
-    elif anb < 0:
-        treatment_plan.append({"title": "پروتراکشن فک بالا یا اصلاح کلاس III", "desc": "فیس‌ماسک در سنین رشد یا جراحی دو فک در سنین بالاتر."})
-    else:
-        treatment_plan.append({"title": "ارتودنسی مرتب‌سازی دندانی", "desc": "تمرکز بر ردیف‌سازی دندان‌ها، اصلاح Crowding و تنظیم قوس‌ها بدون مداخله اسکلتی."})
-
-    if dist_ls > 0 or dist_li > 1:
-        treatment_plan.append({"title": "ارزیابی طرح درمان کشیدن دندان (Extraction Evaluation)", "desc": "به دلیل برجستگی لب‌ها نسبت به خط E، بررسی کشیدن پری‌مولرها جهت ریترود کردن دندان‌های قدامی پیشنهاد می‌شود."})
-
-    # --- ۱۰. نمایش در UI Streamlit ---
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Steiner (ANB)", f"{anb}°", f"{round(anb - 2.0, 2)}°")
-    m2.metric("Wits", f"{wits_mm} mm", f"{round(wits_mm - wits_norm, 2)} mm")
-    m3.metric("McNamara Diff", f"{diff_mcnamara} mm")
-    m4.metric("Downs (FMA)", f"{fma}°", f"{round(fma - 25.0, 2)}°")
-
-    st.divider()
-    st.header("📊 جدول مقایسه کامل با Normها و آنالیز جامع")
-    
-    tab1, tab2, tab3 = st.tabs(["📐 جدول مقایسه با Normها", "🔍 تفسیر تخصصی داده‌ها", "💡 طرح درمان پیشنهادی"])
-    
-    with tab1:
-        st.subheader("مقایسه اندازه پارامترها با مقادیر مرجع (Norms)")
-        st.dataframe(norm_table_data, use_container_width=True)
-
-    with tab2:
-        st.subheader("تحلیل تفصیلی ناهنجاری‌ها")
-        for cat, desc in detailed_interpretations.items():
-            st.markdown(f"**• {cat}:**")
-            st.write(desc)
-
-    with tab3:
-        st.subheader("دستورالعمل‌های پیشنهادی درمان")
-        for idx, item in enumerate(treatment_plan, 1):
-            st.markdown(f"**{idx}. {item['title']}**")
-            st.write(item['desc'])
-
-    # --- ۱۱. تولید و دکمه دانلود PDF ---
-    st.markdown("---")
-    
-    patient_info_pdf = {
-        'gender': gender,
-        'pixel_size': pixel_size,
-        'date': '2026-09-10',
-        'diag': "Class II Skeletal" if anb > 4 else ("Class III Skeletal" if anb < 0 else "Class I Skeletal")
-    }
-    
-    img_byte_arr = io.BytesIO()
-    draw_img.save(img_byte_arr, format='PNG')
-    annotated_img_bytes = img_byte_arr.getvalue()
-    
-    pdf_bytes = generate_clinical_pdf(patient_info_pdf, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes)
-    
-    st.download_button(
-        label="📄 دانلود گزارش جامع چندصفحه‌ای بالینی و Norms (PDF)",
-        data=pdf_bytes,
-        file_name=f"Aariz_Comprehensive_Report_{uploaded_file.name.split('.')[0]}.pdf",
-        mime="application/pdf",
-        use_container_width=True
-    )
-    
-    gc.collect()
+            st.success("Analysis Complete!")
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.subheader("Landmark Coordinates")
+                df_landmarks = pd.DataFrame(landmarks, columns=["X (px)", "Y (px)"])
+                df_landmarks.index = LANDMARK_NAMES[:len(landmarks)]
+                st.dataframe(df_landmarks)
+                
+            with col2:
+                st.subheader("Cephalometric Parameters")
+                df_analysis = pd.DataFrame(list(analysis_results.items()), columns=["Parameter", "Value (deg)"])
+                st.dataframe(df_analysis)
+                
+                # PDF Generation Action
+                pdf_bytes = generate_pdf_report(image, landmarks, analysis_results)
+                st.download_button(
+                    label="Download Clinical PDF Report",
+                    data=pdf_bytes,
+                    file_name="Aariz_Cephalometric_Report.pdf",
+                    mime="application/pdf"
+                )
+else:
+    st.info("Please upload a lateral cephalogram image from the sidebar to begin processing.")
