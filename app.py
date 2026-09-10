@@ -4,14 +4,19 @@ import torch.nn as nn
 import numpy as np
 import os
 import gc
+import io
 from PIL import Image, ImageDraw
-# import torchvision.transforms as transforms # حذف شد برای بهینه‌سازی
 from streamlit_image_coordinates import streamlit_image_coordinates
+
+# وارد کردن کتابخانه‌های ReportLab برای ساخت PDF
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # --- ۱. تنظیمات صفحه و استایل (فشرده‌سازی) ---
 st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
 
-# اعمال CSS برای کاهش سایز کلی عناصر
 st.markdown("""
 <style>
     /* کاهش سایز فونت کلی */
@@ -57,7 +62,6 @@ class CephaUNet(nn.Module):
 
 # --- ۳. مدیریت فایل و مدل‌ها (به‌روزرسانی شده) ---
 def get_model_map():
-    # استفاده از مدل‌های کوانتایز شده برای عملکرد بهتر
     return ['checkpoint_unet_clinical_int8.pth', 'specialist_pure_model_int8.pth', 'tmj_specialist_model_int8.pth']
 
 def check_files():
@@ -73,15 +77,11 @@ def load_models():
     device = torch.device("cpu")
     loaded_models = []
     
-    # ساختار مدل پایه برای بارگذاری وزنه های int8
     for f in get_model_map():
         m = CephaUNet(n_landmarks=29).to(device)
-        
-        # مدل‌های کوانتایز شده Dynamic نیاز به آماده‌سازی قبل از لود دارند
         m = torch.quantization.quantize_dynamic(
             m, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8
         )
-        
         ckpt = torch.load(f, map_location=device)
         m.load_state_dict(ckpt)
         m.eval()
@@ -89,6 +89,81 @@ def load_models():
         del ckpt
         gc.collect()
     return loaded_models
+
+# --- ماژول افزایشی: تابع ساخت PDF ---
+def generate_clinical_pdf(patient_info, angles_data, clinical_summary, annotated_img_bytes):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=18, leading=22,
+        textColor=colors.HexColor('#1E3A8A'), alignment=1, spaceAfter=10
+    )
+    section_style = ParagraphStyle(
+        'SectionHeader', parent=styles['Heading2'], fontSize=13, leading=16,
+        textColor=colors.HexColor('#1E40AF'), spaceBefore=8, spaceAfter=4
+    )
+    normal_style = styles['Normal']
+    elements = []
+    
+    elements.append(Paragraph("Aariz Precision Station - Cephalometric Clinical Report", title_style))
+    elements.append(Spacer(1, 8))
+    
+    info_data = [
+        [Paragraph(f"<b>Patient Gender:</b> {patient_info.get('gender')}", normal_style),
+         Paragraph(f"<b>Pixel Size:</b> {patient_info.get('pixel_size')} mm/px", normal_style)],
+        [Paragraph(f"<b>Date:</b> {patient_info.get('date')}", normal_style),
+         Paragraph(f"<b>Diagnosis:</b> {clinical_summary.get('diag')}", normal_style)]
+    ]
+    info_table = Table(info_data, colWidths=[270, 270])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F3F4F6')),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.HexColor('#E5E7EB')),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 10))
+    
+    elements.append(Paragraph("Cephalometric Measurements", section_style))
+    table_content = [["Measurement", "Value", "Standard Range"]]
+    for m in angles_data:
+        table_content.append([m['name'], f"{m['value']} {m['unit']}", m['normal']])
+        
+    angles_table = Table(table_content, colWidths=[180, 160, 200])
+    angles_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+        ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+    ]))
+    elements.append(angles_table)
+    elements.append(Spacer(1, 10))
+    
+    elements.append(Paragraph("Clinical Diagnostics Summary", section_style))
+    diag_text = f"""
+    <b>Skeletal Classification:</b> {clinical_summary.get('diag')}<br/>
+    <b>Growth Pattern:</b> {clinical_summary.get('fma_desc')}<br/>
+    <b>Maxilla Length:</b> {clinical_summary.get('co_a')} mm | <b>Mandible Length:</b> {clinical_summary.get('co_gn')} mm<br/>
+    <b>Upper Lip Distance:</b> {clinical_summary.get('dist_li')} mm | <b>Lower Lip Distance:</b> {clinical_summary.get('dist_ls')} mm
+    """
+    elements.append(Paragraph(diag_text, normal_style))
+    elements.append(Spacer(1, 10))
+    
+    if annotated_img_bytes:
+        elements.append(Paragraph("Cephalometric Landmark Overlay", section_style))
+        img_buf = io.BytesIO(annotated_img_bytes)
+        rl_img = RLImage(img_buf, width=280, height=280)
+        elements.append(rl_img)
+        
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # --- ۴. اجرای منطق اصلی برنامه ---
 models = load_models()
@@ -110,10 +185,8 @@ def run_precise_prediction(img_pil, models):
     canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
     canvas.paste(img_rs, (px, py))
     
-    # --- تبدیل به تنسور با استفاده از numpy (جایگزین torchvision) ---
     np_img = np.array(canvas).astype(np.float32) / 255.0
     input_tensor = torch.from_numpy(np_img).unsqueeze(0).unsqueeze(0).to(device)
-    # -------------------------------------------------------------
     
     with torch.no_grad():
         outs = []
@@ -249,5 +322,44 @@ if uploaded_file:
         st.write(f"• الگو: **{fma_desc}**")
         st.write(f"• طول فک بالا: {round(co_a, 1)} mm")
         st.write(f"• طول فک پایین: {round(co_gn, 1)} mm")
+
+    # --- تولید و دکمه دانلود PDF ---
+    st.markdown("---")
+    
+    patient_info_pdf = {
+        'gender': gender,
+        'pixel_size': pixel_size,
+        'date': '2026-09-10'
+    }
+    
+    angles_data_pdf = [
+        {'name': 'Steiner (ANB)', 'value': anb, 'unit': '°', 'normal': '2.0° to 4.0°'},
+        {'name': 'Wits Appraisal', 'value': round(wits_mm, 2), 'unit': 'mm', 'normal': f"{wits_norm}.0 mm"},
+        {'name': 'McNamara Discrepancy', 'value': diff_mcnamara, 'unit': 'mm', 'normal': 'N/A'},
+        {'name': 'Downs (FMA)', 'value': fma, 'unit': '°', 'normal': '22.0° to 28.0°'}
+    ]
+    
+    clinical_summary_pdf = {
+        'diag': diag,
+        'fma_desc': fma_desc,
+        'co_a': round(co_a, 1),
+        'co_gn': round(co_gn, 1),
+        'dist_li': dist_li,
+        'dist_ls': dist_ls
+    }
+    
+    img_byte_arr = io.BytesIO()
+    draw_img.save(img_byte_arr, format='PNG')
+    annotated_img_bytes = img_byte_arr.getvalue()
+    
+    pdf_bytes = generate_clinical_pdf(patient_info_pdf, angles_data_pdf, clinical_summary_pdf, annotated_img_bytes)
+    
+    st.download_button(
+        label="📄 دانلود گزارش کامل بالینی (PDF)",
+        data=pdf_bytes,
+        file_name=f"Aariz_Clinical_Report_{uploaded_file.name.split('.')[0]}.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
     
     gc.collect()
