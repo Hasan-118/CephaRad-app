@@ -85,8 +85,8 @@ def load_models():
         gc.collect()
     return loaded_models
 
-# --- ماژول ساخت PDF افزایشی ---
-def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment_plan, annotated_img_bytes):
+# --- ماژول ساخت PDF افزایشی چندصفحه‌ای ---
+def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
@@ -103,14 +103,14 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment
     normal_style = styles['Normal']
     elements = []
     
-    elements.append(Paragraph("Aariz Precision Station - Cephalometric Report", title_style))
+    elements.append(Paragraph("Aariz Precision Station - Comprehensive Cephalometric Report", title_style))
     elements.append(Spacer(1, 6))
     
     info_data = [
         [Paragraph(f"<b>Patient Gender:</b> {patient_info.get('gender')}", normal_style),
          Paragraph(f"<b>Pixel Size:</b> {patient_info.get('pixel_size')} mm/px", normal_style)],
         [Paragraph(f"<b>Date:</b> {patient_info.get('date')}", normal_style),
-         Paragraph(f"<b>Diagnosis:</b> {clinical_summary.get('diag')}", normal_style)]
+         Paragraph(f"<b>Primary Diagnosis:</b> {patient_info.get('diag')}", normal_style)]
     ]
     info_table = Table(info_data, colWidths=[270, 270])
     info_table.setStyle(TableStyle([
@@ -122,12 +122,15 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment
     elements.append(info_table)
     elements.append(Spacer(1, 8))
     
-    elements.append(Paragraph("1. Cephalometric Measurements", section_style))
-    table_content = [["Measurement", "Value", "Standard Range"]]
-    for m in angles_data:
-        table_content.append([m['name'], f"{m['value']} {m['unit']}", m['normal']])
+    elements.append(Paragraph("1. Comparison with Norms & Normative Standards", section_style))
+    table_content = [["Parameter", "Measured", "Norm / Mean", "Deviation", "Clinical Status"]]
+    for item in norm_table_data:
+        table_content.append([
+            item['param'], f"{item['measured']} {item['unit']}",
+            f"{item['norm']} {item['unit']}", f"{item['dev']} {item['unit']}", item['status']
+        ])
         
-    angles_table = Table(table_content, colWidths=[180, 160, 200])
+    angles_table = Table(table_content, colWidths=[130, 90, 100, 90, 130])
     angles_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -135,22 +138,19 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment
         ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
-        ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+        ('ALIGN', (1, 0), (-2, -1), 'CENTER'),
     ]))
     elements.append(angles_table)
     elements.append(Spacer(1, 8))
     
-    elements.append(Paragraph("2. Detailed Data Analysis", section_style))
-    analysis_text = f"""
-    <b>Skeletal Classification:</b> {clinical_summary.get('diag_desc')}<br/>
-    <b>Vertical Growth Pattern:</b> {clinical_summary.get('fma_detail')}<br/>
-    <b>Maxillo-Mandibular Relationship:</b> Maxilla = {clinical_summary.get('co_a')} mm | Mandible = {clinical_summary.get('co_gn')} mm (Diff: {clinical_summary.get('diff_mcnamara')} mm)<br/>
-    <b>Soft Tissue Profile:</b> Upper Lip to E-Line = {clinical_summary.get('dist_ls')} mm | Lower Lip to E-Line = {clinical_summary.get('dist_li')} mm ({clinical_summary.get('soft_desc')})
-    """
-    elements.append(Paragraph(analysis_text, normal_style))
-    elements.append(Spacer(1, 8))
+    elements.append(Paragraph("2. Detailed Diagnostic Interpretation", section_style))
+    interp_text = ""
+    for category, desc in detailed_interpretations.items():
+        interp_text += f"<b>• {category}:</b> {desc}<br/><br/>"
+    elements.append(Paragraph(interp_text, normal_style))
+    elements.append(Spacer(1, 6))
 
-    elements.append(Paragraph("3. Proposed Treatment Plan", section_style))
+    elements.append(Paragraph("3. Proposed Clinical Treatment Plan", section_style))
     plan_text = ""
     for idx, item in enumerate(treatment_plan, 1):
         plan_text += f"<b>{idx}. {item['title']}:</b> {item['desc']}<br/>"
@@ -160,7 +160,7 @@ def generate_clinical_pdf(patient_info, angles_data, clinical_summary, treatment
     if annotated_img_bytes:
         elements.append(Paragraph("4. Cephalometric Landmark Overlay", section_style))
         img_buf = io.BytesIO(annotated_img_bytes)
-        rl_img = RLImage(img_buf, width=240, height=240)
+        rl_img = RLImage(img_buf, width=220, height=220)
         elements.append(rl_img)
         
     doc.build(elements)
@@ -279,7 +279,7 @@ if uploaded_file:
             if st.session_state.lms[target_idx] != m_c:
                 st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-    # --- ۷. محاسبات بالینی ---
+    # --- ۷. محاسبات کامل زاویه‌ای و طولی ---
     st.divider()
     def get_ang(p1, p2, p3, p4=None):
         v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -289,129 +289,121 @@ if uploaded_file:
         v1 = np.append(l2 - l1, 0); v2 = np.append(p - l1, 0)
         return np.linalg.norm(np.cross(v1, v2)) / (np.linalg.norm(l2 - l1) + 1e-6)
 
-    sna, snb = get_ang(l[10], l[4], l[0]), get_ang(l[10], l[4], l[2]); anb = round(sna - snb, 2)
+    sna = get_ang(l[10], l[4], l[0])
+    snb = get_ang(l[10], l[4], l[2])
+    anb = round(sna - snb, 2)
     fma = get_ang(l[15], l[5], l[14], l[3])
-    co_a = np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size
-    co_gn = np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size
+    co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 1)
+    co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 1)
     diff_mcnamara = round(co_gn - co_a, 2)
+    
     p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
     v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
-    wits_mm = (np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size
-    wits_norm = 0 if gender == "آقا (Male)" else -1
+    wits_mm = round((np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size, 2)
+    wits_norm = 0.0 if gender == "آقا (Male)" else -1.0
+    
     dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
     dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
-    # --- ۸. تولید تحلیل جامع داده‌ها و طرح درمان ---
-    w_diff = wits_mm - wits_norm
-    if w_diff > 1.5:
-        diag = "Class II Skeletal"
-        diag_desc = f"ناهنجاری اسکلتی کلاس II (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm). برآمدگی فک بالا یا عقب‌ماندگی فک پایین."
-    elif w_diff < -1.5:
-        diag = "Class III Skeletal"
-        diag_desc = f"ناهنجاری اسکلتی کلاس III (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm). جلوزدگی فک پایین یا ضعیف بودن فک بالا."
-    else:
-        diag = "Class I Skeletal"
-        diag_desc = f"رابطه اسکلتی نرمال کلاس I (ANB = {anb}°, Wits = {round(wits_mm, 1)} mm)."
+    # --- ۸. ساخت جدول مقایسه با NORMها و انحرافات ---
+    norm_table_data = [
+        {"param": "SNA (Maxilla Pos)", "measured": sna, "unit": "°", "norm": 82.0, "dev": round(sna - 82.0, 2), "status": "Protrusive" if sna > 84 else ("Retrusive" if sna < 80 else "Normal")},
+        {"param": "SNB (Mandible Pos)", "measured": snb, "unit": "°", "norm": 80.0, "dev": round(snb - 80.0, 2), "status": "Protrusive" if snb > 82 else ("Retrusive" if snb < 78 else "Normal")},
+        {"param": "ANB (Skeletal Rel)", "measured": anb, "unit": "°", "norm": 2.0, "dev": round(anb - 2.0, 2), "status": "Class II" if anb > 4 else ("Class III" if anb < 0 else "Class I")},
+        {"param": "Wits Appraisal", "measured": wits_mm, "unit": "mm", "norm": wits_norm, "dev": round(wits_mm - wits_norm, 2), "status": "Class II" if (wits_mm - wits_norm) > 1.5 else ("Class III" if (wits_mm - wits_norm) < -1.5 else "Class I")},
+        {"param": "FMA (Vertical Angle)", "measured": fma, "unit": "°", "norm": 25.0, "dev": round(fma - 25.0, 2), "status": "Hyperdivergent" if fma > 30 else ("Hypodivergent" if fma < 20 else "Normal")},
+        {"param": "Co-A (Maxilla Length)", "measured": co_a, "unit": "mm", "norm": 90.0, "dev": round(co_a - 90.0, 2), "status": "Increased" if co_a > 95 else ("Decreased" if co_a < 85 else "Normal")},
+        {"param": "Co-Gn (Mandible Length)", "measured": co_gn, "unit": "mm", "norm": 115.0, "dev": round(co_gn - 115.0, 2), "status": "Increased" if co_gn > 122 else ("Decreased" if co_gn < 108 else "Normal")},
+        {"param": "Upper Lip to E-Line", "measured": dist_ls, "unit": "mm", "norm": -4.0, "dev": round(dist_ls - (-4.0), 2), "status": "Protrusive" if dist_ls > -2 else ("Retrusive" if dist_ls < -6 else "Normal")},
+        {"param": "Lower Lip to E-Line", "measured": dist_li, "unit": "mm", "norm": -2.0, "dev": round(dist_li - (-2.0), 2), "status": "Protrusive" if dist_li > 0 else ("Retrusive" if dist_li < -4 else "Normal")}
+    ]
 
-    if fma > 32:
-        fma_desc = "Vertical Growing (Hyperdivergent)"
-        fma_detail = f"الگوی رشد عمودی یا High Angle (زاویه FMA = {fma}°). تمایل به اوپن بایت و افزایش ارتفاع تحتانی صورت."
-    elif fma < 20:
-        fma_desc = "Horizontal Growing (Hypodivergent)"
-        fma_detail = f"الگوی رشد افقی یا Low Angle (زاویه FMA = {fma}°). تمایل به دیپ بایت و عضلات جویدن قوی."
-    else:
-        fma_desc = "Normal Divergent"
-        fma_detail = f"الگوی رشد نرمال و متوازن (زاویه FMA = {fma}°)."
+    # --- ۹. تفسير جامع و تخصصی داده‌ها ---
+    detailed_interpretations = {
+        "رابطه اسکلتی ساژیتال (Sagittal Relationship)": f"مقدار زاویه ANB برابر با {anb}° و ارزیابی Wits برابر با {wits_mm} mm می‌باشد. " + 
+            ("نشان‌دهنده ناهنجاری اسکلتی کلاس II شدید به دلیل برآمدگی فک بالا یا عقب‌ماندگی فک پایین است." if anb > 4.5 else 
+             ("نشان‌دهنده ناهنجاری اسکلتی کلاس III به دلیل جلو بودن فک پایین یا ضعیف بودن فک بالا است." if anb < 0.5 else 
+              "رابطه فک بالا و پایین در حد فاصل نرمال است و تطابق اسکلتی کلاس I وجود دارد.")),
 
-    soft_desc = "پروفایل عقب‌رفته (Retrusive Lip)" if dist_ls < -2 else "پروفایل برجسته (Protrusive Lip)" if dist_ls > 2 else "پروفایل متوازن (Balanced Soft Tissue)"
+        "الگوی رشد عمودی (Vertical Pattern)": f"زاویه FMA برابر با {fma}° است (Norm: 25.0°). " + 
+            ("الگوی رشد هایپردایورجنت (Vertical Growing / High Angle). بیمار تمایل به اوپن بایت، افزایش ارتفاع تحتانی صورت و عضلات ضعیف‌تر جویدن دارد." if fma > 30 else 
+             ("الگوی رشد هایپودایورجنت (Horizontal Growing / Low Angle). بیمار دارای ساختار صورت فشرده، تمایل به دیپ بایت و عضلات جویدن قوی است." if fma < 20 else 
+              "الگوی رشد عمودی متوازن و نرمال (Mesofacial/Normodivergent).")),
 
-    # منطق تولید طرح درمان هوشمند
+        "تحلیل تناسب طول فکین (McNamara Discrepancy)": f"طول موثر فک بالا (Co-A) برابر {co_a} mm و طول موثر فک پایین (Co-Gn) برابر {co_gn} mm است (اختلاف: {diff_mcnamara} mm). " +
+            ("اختلاف طول فکین بیشتر از حد نرمال بوده که موید رشد بیش از حد فک پایین یا کوتاهی فک بالا می‌باشد." if diff_mcnamara > 28 else
+             ("اختلاف طول فکین کمتر از حد نرمال بوده که نشان‌دهنده نقص رشد فک پایین است." if diff_mcnamara < 20 else
+              "تناسب طولی فک بالا و پایین در محدوده هارمونیک قرار دارد.")),
+
+        "پروفایل بافت نرم (Soft Tissue Profile)": f"فاصله لب بالا تا خط E برابر با {dist_ls} mm و لب پایین {dist_li} mm است. " +
+            ("برجستگی بافت نرم لب‌ها نسبت به خط E مشهود است که می‌تواند ناشی از پروتروژن دندان‌های قدامی (Bimaxillary Protrusion) باشد." if dist_ls > -1 or dist_li > 1 else
+             ("پروفایل لب‌ها نسبت به خط E عقب‌رفته (Retrusive) است." if dist_ls < -6 else
+              "پروفایل بافت نرم و وضعیت لب‌ها زیبا و متوازن است."))
+    }
+
+    # طرح درمان پیشنهادی
     treatment_plan = []
-    if "Class II" in diag:
-        if "Vertical" in fma_desc:
-            treatment_plan.append({"title": "کنترل رشد عمودی و ساپورت کلاس II", "desc": "استفاده از هدگیر یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II جهت جلوگیری از چرخش ساعت‌گرد فک پایین."})
+    if anb > 4:
+        if fma > 30:
+            treatment_plan.append({"title": "کنترل رشد عمودی و اصلاح کلاس II", "desc": "استفاده از دستگاه‌های اینترودکننده یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II جهت جلوگیری از چرخش ساعت‌گرد فک پایین."})
         else:
-            treatment_plan.append({"title": "تحریک رشد/پیش‌آوردن فک پایین", "desc": "استفاده از دستگاه‌های فانکشنال (مانند Twin Block یا Herbst) در صورت بیمار در حال رشد، یا جراحی Orthognathic (BSSO) در بزرگسالان."})
-    elif "Class III" in diag:
-        treatment_plan.append({"title": "پروتراکشن فک بالا یا اصلاح کلاس III", "desc": "استفاده از Face Mask / Reverse Pull Headgear در سنین رشد، یا جراحی دو فک (Maxillary Advancement / Mandibular Setback) در سنین بالاتر."})
+            treatment_plan.append({"title": "تحریک رشد/پیش‌آوردن فک پایین", "desc": "دستگاه‌های فانکشنال (مانند Twin Block یا Herbst) در سنین رشد، یا جراحی BSSO در سنین بالاتر."})
+    elif anb < 0:
+        treatment_plan.append({"title": "پروتراکشن فک بالا یا اصلاح کلاس III", "desc": "فیس‌ماسک در سنین رشد یا جراحی دو فک در سنین بالاتر."})
     else:
-        treatment_plan.append({"title": "ارتودنسی کاموفلاژ / مرتب‌سازی دندانی", "desc": "تمرکز بر ردیف‌سازی دندان‌ها، اصلاح شلوغی (Crowding) و تنطیم قوس‌های دندانی بدون نیاز به مداخله اسکلتی شدید."})
+        treatment_plan.append({"title": "ارتودنسی مرتب‌سازی دندانی", "desc": "تمرکز بر ردیف‌سازی دندان‌ها، اصلاح Crowding و تنظیم قوس‌ها بدون مداخله اسکلتی."})
 
-    if dist_ls > 3 or dist_li > 3:
-        treatment_plan.append({"title": "ارزیابی کشیدن دندان (Extraction Evaluation)", "desc": "به دلیل برجستگی لب‌ها نسبت به خط E، بررسی کشیدن پری‌مولرها جهت عقب بردن دندان‌های قدامی و بهبود عقب‌رفتگی لب توصیه می‌شود."})
+    if dist_ls > 0 or dist_li > 1:
+        treatment_plan.append({"title": "ارزیابی طرح درمان کشیدن دندان (Extraction Evaluation)", "desc": "به دلیل برجستگی لب‌ها نسبت به خط E، بررسی کشیدن پری‌مولرها جهت ریترود کردن دندان‌های قدامی پیشنهاد می‌شود."})
 
-    # --- ۹. نمایش متریک‌ها و تحلیل در UI ---
+    # --- ۱۰. نمایش در UI Streamlit ---
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Steiner (ANB)", f"{anb}°")
-    m2.metric("Wits", f"{round(wits_mm, 2)} mm")
-    m3.metric("McNamara", f"{diff_mcnamara} mm")
-    m4.metric("Downs (FMA)", f"{fma}°")
+    m1.metric("Steiner (ANB)", f"{anb}°", f"{round(anb - 2.0, 2)}°")
+    m2.metric("Wits", f"{wits_mm} mm", f"{round(wits_mm - wits_norm, 2)} mm")
+    m3.metric("McNamara Diff", f"{diff_mcnamara} mm")
+    m4.metric("Downs (FMA)", f"{fma}°", f"{round(fma - 25.0, 2)}°")
 
     st.divider()
-    st.header("📑 گزارش بالینی و آنالیز جامع")
+    st.header("📊 جدول مقایسه کامل با Normها و آنالیز جامع")
     
-    tab1, tab2 = st.tabs(["🔍 تحلیل تفصیلی داده‌ها", "💡 پیشنهاد طرح درمان"])
+    tab1, tab2, tab3 = st.tabs(["📐 جدول مقایسه با Normها", "🔍 تفسیر تخصصی داده‌ها", "💡 طرح درمان پیشنهادی"])
     
     with tab1:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("🦴 وضعیت اسکلتی و عمودی")
-            st.write(f"• **تشخیص اسکلتی:** {diag}")
-            st.caption(diag_desc)
-            st.write(f"• **الگوی رشد:** {fma_desc}")
-            st.caption(fma_detail)
-        with c2:
-            st.subheader("👄 ابعاد فکین و بافت نرم")
-            st.write(f"• **طول فک بالا (Co-A):** {round(co_a, 1)} mm")
-            st.write(f"• **طول فک پایین (Co-Gn):** {round(co_gn, 1)} mm")
-            st.write(f"• **فاصله لب بالا تا خط E:** {dist_ls} mm")
-            st.write(f"• **فاصله لب پایین تا خط E:** {dist_li} mm")
-            st.caption(f"تفسیر بافت نرم: {soft_desc}")
+        st.subheader("مقایسه اندازه پارامترها با مقادیر مرجع (Norms)")
+        st.dataframe(norm_table_data, use_container_width=True)
 
     with tab2:
-        st.subheader("🎯 دستورالعمل‌های پیشنهادی درمان")
+        st.subheader("تحلیل تفصیلی ناهنجاری‌ها")
+        for cat, desc in detailed_interpretations.items():
+            st.markdown(f"**• {cat}:**")
+            st.write(desc)
+
+    with tab3:
+        st.subheader("دستورالعمل‌های پیشنهادی درمان")
         for idx, item in enumerate(treatment_plan, 1):
             st.markdown(f"**{idx}. {item['title']}**")
             st.write(item['desc'])
 
-    # --- ۱۰. تولید و دکمه دانلود PDF ---
+    # --- ۱۱. تولید و دکمه دانلود PDF ---
     st.markdown("---")
     
     patient_info_pdf = {
         'gender': gender,
         'pixel_size': pixel_size,
-        'date': '2026-09-10'
-    }
-    
-    angles_data_pdf = [
-        {'name': 'Steiner (ANB)', 'value': anb, 'unit': '°', 'normal': '2.0° to 4.0°'},
-        {'name': 'Wits Appraisal', 'value': round(wits_mm, 2), 'unit': 'mm', 'normal': f"{wits_norm}.0 mm"},
-        {'name': 'McNamara Discrepancy', 'value': diff_mcnamara, 'unit': 'mm', 'normal': 'N/A'},
-        {'name': 'Downs (FMA)', 'value': fma, 'unit': '°', 'normal': '22.0° to 28.0°'}
-    ]
-    
-    clinical_summary_pdf = {
-        'diag': diag,
-        'diag_desc': diag_desc,
-        'fma_detail': fma_detail,
-        'co_a': round(co_a, 1),
-        'co_gn': round(co_gn, 1),
-        'diff_mcnamara': diff_mcnamara,
-        'dist_li': dist_li,
-        'dist_ls': dist_ls,
-        'soft_desc': soft_desc
+        'date': '2026-09-10',
+        'diag': "Class II Skeletal" if anb > 4 else ("Class III Skeletal" if anb < 0 else "Class I Skeletal")
     }
     
     img_byte_arr = io.BytesIO()
     draw_img.save(img_byte_arr, format='PNG')
     annotated_img_bytes = img_byte_arr.getvalue()
     
-    pdf_bytes = generate_clinical_pdf(patient_info_pdf, angles_data_pdf, clinical_summary_pdf, treatment_plan, annotated_img_bytes)
+    pdf_bytes = generate_clinical_pdf(patient_info_pdf, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes)
     
     st.download_button(
-        label="📄 دانلود گزارش کامل بالینی و طرح درمان (PDF)",
+        label="📄 دانلود گزارش جامع چندصفحه‌ای بالینی و Norms (PDF)",
         data=pdf_bytes,
-        file_name=f"Aariz_Clinical_Report_{uploaded_file.name.split('.')[0]}.pdf",
+        file_name=f"Aariz_Comprehensive_Report_{uploaded_file.name.split('.')[0]}.pdf",
         mime="application/pdf",
         use_container_width=True
     )
