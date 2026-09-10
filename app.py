@@ -16,11 +16,13 @@ enableXsrfProtection = false
 """)
 
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 import torch.nn as nn
 import numpy as np
 import gc
 import io
+import base64
 import urllib.request
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -44,18 +46,65 @@ try:
 except ImportError:
     render_intraoral_3d_tab = None
 
-# --- تابع بهینه‌سازی و فشرده‌سازی تصویر برای افزایش سرعت آپلود ---
-def optimize_image_for_upload(uploaded_file, max_dimension=1200, quality=85):
-    img = Image.open(uploaded_file)
-    w, h = img.size
-    if max(w, h) > max_dimension:
-        ratio = max_dimension / float(max(w, h))
-        new_size = (int(w * ratio), int(h * ratio))
-        img = img.resize(new_size, Image.LANCZOS)
-    img_io = io.BytesIO()
-    img.convert("RGB").save(img_io, format="JPEG", quality=quality, optimize=True)
-    img_io.seek(0)
-    return Image.open(img_io)
+# --- کامپوننت فشرده‌سازی سمت مرورگر (Client-side Compression) ---
+def client_side_uploader():
+    html_code = """
+    <div style="font-family: sans-serif; direction: rtl; text-align: right;">
+        <label style="font-weight: bold; font-size: 13px; color: #31333F;">آپلود سریع تصویر (فشرده‌سازی خودکار):</label><br/>
+        <input type="file" id="fileInput" accept="image/*" style="margin-top: 5px; font-size: 12px;"/>
+        <div id="status" style="font-size: 11px; color: #008000; margin-top: 4px;"></div>
+    </div>
+    <script>
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        document.getElementById('status').innerText = '⚡ در حال فشرده‌سازی و آپلود آنی...';
+        
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            const img = new Image();
+            img.onload = function() {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                const max_dim = 1200;
+                
+                if (width > height) {
+                    if (width > max_dim) {
+                        height = Math.round((height * max_dim) / width);
+                        width = max_dim;
+                    }
+                } else {
+                    if (height > max_dim) {
+                        width = Math.round((width * max_dim) / height);
+                        height = max_dim;
+                    }
+                }
+                
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                document.getElementById('status').innerText = '✅ آپلود انجام شد.';
+                
+                window.parent.postMessage({
+                    type: 'streamlit:setComponentValue',
+                    value: {
+                        name: file.name,
+                        data: dataUrl
+                    }
+                }, '*');
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+    </script>
+    """
+    return components.html(html_code, height=90)
 
 # --- آماده‌سازی و ثبت فونت Vazir برای ReportLab ---
 def register_vazir_font():
@@ -257,7 +306,10 @@ with tab_ceph:
     gender = st.sidebar.radio("جنسیت بیمار:", ["آقا (Male)", "خانم (Female)"])
     pixel_size = st.sidebar.number_input("Pixel Size (mm/px):", 0.01, 1.0, 0.1, 0.001, format="%.4f")
     text_scale = st.sidebar.slider("🔤 مقیاس نام لندمارک:", 1, 10, 2)
-    uploaded_file = st.sidebar.file_uploader("آپلود تصویر:", type=['png', 'jpg', 'jpeg'])
+    
+    with st.sidebar:
+        upload_data = client_side_uploader()
+        uploaded_file = st.file_uploader("آپلود استاندارد (در صورت نیاز):", type=['png', 'jpg', 'jpeg'])
 
     if models is None:
         st.stop()
@@ -298,11 +350,23 @@ with tab_ceph:
 
     if "click_version" not in st.session_state: st.session_state.click_version = 0
 
-    if uploaded_file:
-        if "raw_img" not in st.session_state or st.session_state.get("file_id") != uploaded_file.name:
-            st.session_state.raw_img = optimize_image_for_upload(uploaded_file)
-            st.session_state.file_id = uploaded_file.name
-            with st.spinner("🧠 در حال تحلیل با مدل‌های بهینه‌شده..."):
+    image_source = None
+    file_identifier = None
+
+    if upload_data and isinstance(upload_data, dict) and "data" in upload_data:
+        base64_str = upload_data["data"].split(",")[1]
+        image_bytes = base64.b64decode(base64_str)
+        image_source = Image.open(io.BytesIO(image_bytes))
+        file_identifier = upload_data.get("name", "client_compressed_image")
+    elif uploaded_file:
+        image_source = Image.open(uploaded_file)
+        file_identifier = uploaded_file.name
+
+    if image_source:
+        if "raw_img" not in st.session_state or st.session_state.get("file_id") != file_identifier:
+            st.session_state.raw_img = image_source
+            st.session_state.file_id = file_identifier
+            with st.spinner("🧠 در حال تحلیل سریع با مدل‌های هوشمند..."):
                 st.session_state.initial_lms = run_precise_prediction(st.session_state.raw_img, models)
                 st.session_state.lms = st.session_state.initial_lms.copy()
 
@@ -481,12 +545,13 @@ with tab_ceph:
         draw_img.save(img_byte_arr, format='PNG')
         annotated_img_bytes = img_byte_arr.getvalue()
         
+        file_name_pdf = file_identifier.split('.')[0] if file_identifier else "patient"
         pdf_bytes = generate_clinical_pdf(patient_info_pdf, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes)
         
         st.download_button(
             label="📄 دانلود گزارش جامع چندصفحه‌ای بالینی و Norms (PDF)",
             data=pdf_bytes,
-            file_name=f"Aariz_Comprehensive_Report_{uploaded_file.name.split('.')[0]}.pdf",
+            file_name=f"Aariz_Comprehensive_Report_{file_name_pdf}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
