@@ -46,20 +46,20 @@ try:
 except ImportError:
     render_intraoral_3d_tab = None
 
-# --- کامپوننت فشرده‌سازی سمت مرورگر (Client-side Compression) ---
+# --- کامپوننت فشرده‌سازی و تغییر سایز سمت مرورگر (Client-side Ultra-Fast Compression) ---
 def client_side_uploader():
     html_code = """
-    <div style="font-family: sans-serif; direction: rtl; text-align: right;">
-        <label style="font-weight: bold; font-size: 13px; color: #31333F;">آپلود سریع تصویر (فشرده‌سازی خودکار):</label><br/>
-        <input type="file" id="fileInput" accept="image/*" style="margin-top: 5px; font-size: 12px;"/>
-        <div id="status" style="font-size: 11px; color: #008000; margin-top: 4px;"></div>
+    <div style="font-family: sans-serif; direction: rtl; text-align: right; background-color: #f0f2f6; padding: 10px; border-radius: 8px;">
+        <label style="font-weight: bold; font-size: 13px; color: #1E3A8A;">⚡ آپلود فوق‌سریع (کاهش حجم در مرورگر):</label><br/>
+        <input type="file" id="fileInput" accept="image/*" style="margin-top: 8px; font-size: 12px; width: 100%;"/>
+        <div id="status" style="font-size: 11px; color: #059669; margin-top: 6px; font-weight: bold;"></div>
     </div>
     <script>
     document.getElementById('fileInput').addEventListener('change', function(e) {
         const file = e.target.files[0];
         if (!file) return;
         
-        document.getElementById('status').innerText = '⚡ در حال فشرده‌سازی و آپلود آنی...';
+        document.getElementById('status').innerText = '⏳ در حال فشرده‌سازی و آپلود آنی...';
         
         const reader = new FileReader();
         reader.onload = function(event) {
@@ -68,7 +68,7 @@ def client_side_uploader():
                 const canvas = document.createElement('canvas');
                 let width = img.width;
                 let height = img.height;
-                const max_dim = 1200;
+                const max_dim = 1024;
                 
                 if (width > height) {
                     if (width > max_dim) {
@@ -87,8 +87,8 @@ def client_side_uploader():
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0, width, height);
                 
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                document.getElementById('status').innerText = '✅ آپلود انجام شد.';
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
+                document.getElementById('status').innerText = '✅ آپلود آنی موفقیت‌آمیز بود!';
                 
                 window.parent.postMessage({
                     type: 'streamlit:setComponentValue',
@@ -104,7 +104,7 @@ def client_side_uploader():
     });
     </script>
     """
-    return components.html(html_code, height=90)
+    return components.html(html_code, height=110)
 
 # --- آماده‌سازی و ثبت فونت Vazir برای ReportLab ---
 def register_vazir_font():
@@ -132,14 +132,14 @@ def reshape_fa(text):
     return get_display(reshaped_text)
 
 # --- ۱. تنظیمات صفحه و استایل ---
-st.set_page_config(page_title="Aariz Precision Station V7.8.16", layout="wide")
+st.set_page_config(page_title="Aariz Precision Station V7.8.17", layout="wide")
 
 st.markdown("""
 <style>
     html, body, [class*="css"]  { font-size: 14px; }
     .stButton>button { padding: 0.2rem 0.5rem; font-size: 12px; }
     .stSelectbox, .stRadio, .stNumberInput, .stFileUploader { margin-top: -10px; }
-    [data-testid="stSidebar"] { min-width: 250px; max-width: 300px; }
+    [data-testid="stSidebar"] { min-width: 260px; max-width: 320px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -557,6 +557,8 @@ with tab_ceph:
         )
         
         gc.collect()
+    else:
+        st.info("👈 لطفاً تصویر سفلومتری را از پنل سمت چپ (کناری) انتخاب کنید.")
 
 # --- ۱۲. فراخوانی تب اسکن داخل دهانی ۳D ---
 with tab_3d:
