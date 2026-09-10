@@ -8,3 +8,4 @@ opencv-python-headless
 arabic-reshaper
 python-bidi
 fpdf2
+reportlab
