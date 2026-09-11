@@ -18,10 +18,7 @@ def parse_mesh(uploaded_file):
         return None
 
 def simplify_mesh_for_render(mesh, max_faces=15000):
-    """
-    مرحله ۲: کاهش تراکم مش (Mesh Decimation)
-    تعداد مثلث‌های STL را جهت افزایش ۵ برابری سرعت رندر مرورگر بهینه و فشرده می‌کند.
-    """
+    """کاهش تراکم مش جهت افزایش سرعت رندر تعاملی"""
     try:
         if len(mesh.faces) > max_faces:
             simplified = mesh.simplify_quadratic_decimation(max_faces)
@@ -31,31 +28,51 @@ def simplify_mesh_for_render(mesh, max_faces=15000):
         return mesh
 
 def ai_auto_measure_teeth(mesh, is_maxilla=True):
-    """
-    محاسبات ابعاد دندان و قوس فکی براساس آناتومی واقعی فک بالا و پایین
-    """
+    """محاسبات ابعاد دندان و قوس فکی براساس آناتومی واقعی"""
     if mesh is None:
         return (45.0, 88.0) if is_maxilla else (34.8, 80.3)
         
     bounds = mesh.extents  # [X, Y, Z]
-    width_x = bounds[0]    # عرض عرضی قوس
-    depth_y = bounds[1]    # عمق طولی قوس
+    width_x = bounds[0]    
+    depth_y = bounds[1]    
     
-    # محاسبه تقریبی طول قوس با فرمول بیضی
     a = width_x / 2.0
     b = depth_y
     arc_length = np.pi * (3 * (a + b) - np.sqrt((3 * a + b) * (a + 3 * b))) / 2.0
     
     if is_maxilla:
-        # فک بالا: عرض کل و عرض ۶ دندان قدامی
         total_width = round(arc_length * 0.85, 1)
         ant_width = round(total_width * 0.52, 1)
     else:
-        # فک پایین: نسبت‌های طبیعی کوچکتر نسبت به فک بالا
         total_width = round(arc_length * 0.78, 1)
         ant_width = round(total_width * 0.44, 1)
         
     return ant_width, total_width
+
+def calculate_space_analysis(mesh, total_teeth_width, is_maxilla=True):
+    """
+    محاسبه فضای قوس (Space Analysis / Crowding & Spacing)
+    مقایسه طول محیطی قوس فکی با مجموع عرض مزیودیستالی دندان‌ها
+    """
+    if mesh is None:
+        return 0.0, "نامشخص"
+        
+    bounds = mesh.extents
+    # برآورد طول محیطی قوس فکی از روی هندسه سه‌بعدی مش
+    arc_perimeter = bounds[0] * 1.85 if is_maxilla else bounds[0] * 1.75
+    
+    # اختلاف بین فضای موجود (Arc Perimeter) و فضای مورد نیاز (Tooth Widths)
+    # اگر مثبت باشد یعنی فضا داریم (Spacing)، اگر منفی باشد یعنی کمبود فضا داریم (Crowding)
+    diff = round(arc_perimeter - total_teeth_width, 2)
+    
+    if diff < -1.5:
+        status = f"⚠️ کمبود فضا (Crowding): {abs(diff)} mm"
+    elif diff > 1.5:
+        status = f"ℹ️ فضای باز / فاصله (Spacing): {diff} mm"
+    else:
+        status = "✅ توازن کامل فضا و دندان"
+        
+    return diff, status
 
 def create_3d_plotly_figure(mesh, title="3D Intraoral Scan"):
     """رندر تعاملی سه بعدی بهینه‌شده با Plotly"""
@@ -89,7 +106,6 @@ def create_3d_plotly_figure(mesh, title="3D Intraoral Scan"):
     return fig
 
 def render_intraoral_3d_tab():
-    """رندر کامل تب اسکن داخل دهانی ۳D با فشرده‌سازی هوشمند مش"""
     st.header("🦷 آنالیز سه بعدی و اندازه‌گیری خودکار با هوش مصنوعی (AI Intraoral Scan)")
     
     col_up1, col_up2 = st.columns(2)
@@ -126,20 +142,18 @@ def render_intraoral_3d_tab():
                 u_ant_ai, u_tot_ai = ai_auto_measure_teeth(mesh_max_orig, is_maxilla=True) if mesh_max_orig else (45.0, 88.0)
                 l_ant_ai, l_tot_ai = ai_auto_measure_teeth(mesh_man_orig, is_maxilla=False) if mesh_man_orig else (34.8, 80.3)
                 
-                # بروزرسانی کلیدهای اصلی فرم Streamlit
                 st.session_state['input_u_ant'] = float(u_ant_ai)
                 st.session_state['input_u_tot'] = float(u_tot_ai)
                 st.session_state['input_l_ant'] = float(l_ant_ai)
                 st.session_state['input_l_tot'] = float(l_tot_ai)
                 st.success("✅ اندازه‌گیری هوشمند با موفقیت انجام شد!")
 
-        # مقداردهی اولیه امن در session_state
         if 'input_u_ant' not in st.session_state: st.session_state['input_u_ant'] = 45.0
         if 'input_u_tot' not in st.session_state: st.session_state['input_u_tot'] = 88.0
         if 'input_l_ant' not in st.session_state: st.session_state['input_l_ant'] = 34.8
         if 'input_l_tot' not in st.session_state: st.session_state['input_l_tot'] = 80.3
 
-        with st.expander("🔢 جدول مقادیر استخراج‌شده (قابلیت ویرایش دستی):", expanded=True):
+        with st.expander("🔢 جدول مقادیر استخراج‌شده و تحلیل فضا (Crowding & Bolton):", expanded=True):
             b_col1, b_col2 = st.columns(2)
             with b_col1:
                 st.markdown("**فک بالا (Maxilla)**")
@@ -151,7 +165,19 @@ def render_intraoral_3d_tab():
                 l_ant = st.number_input("عرض ۶ دندان قدامی پایین (mm):", 15.0, 60.0, key='input_l_ant', step=0.1)
                 l_tot = st.number_input("عرض ۱۲ دندان پایین (mm):", 40.0, 120.0, key='input_l_tot', step=0.1)
 
-            # محاسبات دقیق شاخص‌های Bolton
+            st.divider()
+            st.markdown("### 📐 نتایج تحلیل فضا (Space Analysis)")
+            space_max_val, space_max_text = calculate_space_analysis(mesh_max_orig, u_tot, is_maxilla=True)
+            space_man_val, space_man_text = calculate_space_analysis(mesh_man_orig, l_tot, is_maxilla=False)
+
+            s_col1, s_col2 = st.columns(2)
+            with s_col1:
+                st.info(f"**فک بالا:** {space_max_text}")
+            with s_col2:
+                st.info(f"**فک پایین:** {space_man_text}")
+
+            st.divider()
+            st.markdown("### 🔢 نسبت‌های بولتون (Bolton Analysis)")
             ant_ratio = round((l_ant / u_ant) * 100, 2) if u_ant > 0 else 0.0
             overall_ratio = round((l_tot / u_tot) * 100, 2) if u_tot > 0 else 0.0
 
