@@ -1,0 +1,7 @@
+[server]
+maxUploadSize = 300
+enableWebsockets = true
+websocketCompression = true
+
+[browser]
+gatherUsageStats = false
