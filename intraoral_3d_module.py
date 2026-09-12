@@ -282,7 +282,7 @@ def render_intraoral_3d_tab():
                         teeth_percent_max = (teeth_mask_max.sum() / len(teeth_mask_max)) * 100
                         st.caption(f"🦷 دندان‌های تشخیص داده‌شده: {teeth_percent_max:.1f}%")
 
-                    mesh_max_simple = safe_simplify_mesh(mesh_max_orig, target_faces=8000)
+                    mesh_max_simple = safe_simplify_mesh(mesh_max_orig, target_faces=40000)
 
                     if len(mesh_max_simple.vertices) == len(mesh_max_orig.vertices):
                         mask_max_simple = teeth_mask_max
@@ -312,7 +312,7 @@ def render_intraoral_3d_tab():
                         teeth_percent_man = (teeth_mask_man.sum() / len(teeth_mask_man)) * 100
                         st.caption(f"🦷 دندان‌های تشخیص داده‌شده: {teeth_percent_man:.1f}%")
 
-                    mesh_man_simple = safe_simplify_mesh(mesh_man_orig, target_faces=8000)
+                    mesh_man_simple = safe_simplify_mesh(mesh_man_orig, target_faces=40000)
 
                     if len(mesh_man_simple.vertices) == len(mesh_man_orig.vertices):
                         mask_man_simple = teeth_mask_man
