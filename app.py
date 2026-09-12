@@ -455,7 +455,7 @@ with tab_ceph:
         
         pdf_bytes = generate_clinical_pdf(patient_info_pdf, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes)
         
-                st.download_button(
+        st.download_button(
             label="📄 دانلود گزارش جامع چندصفحه‌ای بالینی و Norms (PDF)",
             data=pdf_bytes,
             file_name=f"Aariz_Comprehensive_Report_{uploaded_file.name.split('.')[0]}.pdf",
@@ -466,47 +466,3 @@ with tab_ceph:
         # --- دانلود نتایج به صورت JSON برای ادغام با تحلیل ۳D ---
         import json
         from datetime import datetime
-
-        ceph_results_json = {
-            "version": "1.0",
-            "type": "cephalometric_analysis",
-            "timestamp": datetime.now().isoformat(),
-            "patient_info": {
-                "gender": gender,
-                "pixel_size": pixel_size,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "diagnosis": patient_info_pdf['diag']
-            },
-            "measurements": {
-                "SNA": sna,
-                "SNB": snb,
-                "ANB": anb,
-                "Wits": wits_mm,
-                "FMA": fma,
-                "Co_A": co_a,
-                "Co_Gn": co_gn,
-                "McNamara_Diff": diff_mcnamara,
-                "Upper_Lip_E_Line": dist_ls,
-                "Lower_Lip_E_Line": dist_li
-            },
-            "norms_table": norm_table_data,
-            "interpretations": detailed_interpretations,
-            "treatment_plan": treatment_plan
-        }
-
-        st.download_button(
-            label="💾 دانلود نتایج ۲D (JSON) - برای ادغام با تحلیل ۳D",
-            data=json.dumps(ceph_results_json, ensure_ascii=False, indent=2),
-            file_name=f"ceph_results_{uploaded_file.name.split('.')[0]}.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
-        gc.collect()
-
-# --- ۱۲. فراخوانی تب اسکن داخل دهانی ۳D ---
-with tab_3d:
-    if render_intraoral_3d_tab is not None:
-        render_intraoral_3d_tab()
-    else:
-        st.warning("⚠️ ماژول `intraoral_3d_module.py` در کنار فایل اصلی یافت نشد. لطفاً این فایل را در مسیر برنامه قرار دهید.")
