@@ -509,4 +509,4 @@ with tab_3d:
     if render_intraoral_3d_tab is not None:
         render_intraoral_3d_tab()
     else:
-        st.warning("⚠️ ماژول `intraoral_3d_module.py` در کنار فایل اصلی یافت نشد. لطفاً این فایل را در مسیر برنامه قرار دهید.")ض
+        st.warning("⚠️ ماژول `intraoral_3d_module.py` در کنار فایل اصلی یافت نشد. لطفاً این فایل را در مسیر برنامه قرار دهید.")
