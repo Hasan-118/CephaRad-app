@@ -2,15 +2,14 @@ import streamlit as st
 import trimesh
 import numpy as np
 import io
-import pyvista as pv
-from stpyvista import stpyvista
+import plotly.graph_objects as go
 
 # ============================================================
 # توابع کمکی
 # ============================================================
 
-def parse_mesh_pyvista(uploaded_file):
-    """بارگذاری فایل mesh و تبدیل به فرمت PyVista"""
+def parse_mesh(uploaded_file):
+    """بارگذاری فایل mesh"""
     if uploaded_file is None:
         return None
     try:
@@ -21,76 +20,81 @@ def parse_mesh_pyvista(uploaded_file):
         mesh = trimesh.load(io.BytesIO(file_bytes), file_type=file_type, force='mesh')
         if isinstance(mesh, trimesh.Scene):
             mesh = mesh.dump(concatenate=True)
+        if not hasattr(mesh, 'vertices') or len(mesh.vertices) == 0:
+            return None
 
-        # تبدیل trimesh به pyvista
-        vertices = np.array(mesh.vertices)
-        faces = np.array(mesh.faces)
+        extents = mesh.extents
+        max_dim = np.max(extents)
+        if max_dim < 10.0:
+            mesh.apply_scale(10.0)
+        elif max_dim > 300.0:
+            mesh.apply_scale(0.1)
 
-        # PyVista نیاز به فرمت خاص faces دارد
-        # [3, i0, i1, i2, 3, i3, i4, i5, ...]
-        faces_pv = np.hstack([
-            np.full((len(faces), 1), 3),
-            faces
-        ]).flatten()
-
-        pv_mesh = pv.PolyData(vertices, faces_pv)
-        return pv_mesh
+        return mesh
     except Exception as e:
-        st.error(f"خطا در بارگذاری: {type(e).__name__}: {e}")
+        st.error(f"❌ خطا در بارگذاری `{uploaded_file.name}`: {type(e).__name__}: {e}")
         return None
 
 
-def render_pyvista_mesh(pv_mesh, title="3D Scan"):
-    """رندر مش با PyVista و نمایش در Streamlit"""
-    if pv_mesh is None:
-        return
+def safe_simplify_mesh(mesh, target_faces=20000):
+    """کاهش تراکم مش برای رندر سریع‌تر"""
+    if mesh is None:
+        return None
+    current_faces = len(mesh.faces)
+    if current_faces <= target_faces:
+        return mesh
+    try:
+        return mesh.simplify_quadratic_decimation(target_faces)
+    except Exception:
+        pass
+    try:
+        np.random.seed(42)
+        keep_indices = np.sort(np.random.choice(current_faces, target_faces, replace=False))
+        new_faces = mesh.faces[keep_indices]
+        used_vertices = np.unique(new_faces)
+        new_vertices = mesh.vertices[used_vertices]
+        index_map = np.zeros(len(mesh.vertices), dtype=np.int64)
+        index_map[used_vertices] = np.arange(len(used_vertices))
+        new_faces = index_map[new_faces]
+        return trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
+    except Exception:
+        return mesh
 
-    # محاسبه نرمال‌ها برای نورپردازی صاف
-    pv_mesh.compute_normals(
-        cell_normals=False,
-        point_normals=True,
-        inplace=True,
-        auto_orient_normals=True
+
+def create_3d_plotly_figure(mesh, title="3D Scan"):
+    """رندر مش با Plotly"""
+    if mesh is None:
+        return None
+    vertices = mesh.vertices
+    faces = mesh.faces
+
+    fig = go.Figure(data=[
+        go.Mesh3d(
+            x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
+            i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+            color='#F0E6D2',
+            opacity=1.0,
+            flatshading=False,
+            lighting=dict(ambient=0.7, diffuse=0.9, specular=0.3,
+                          roughness=0.4, fresnel=0.1),
+            lightposition=dict(x=100, y=200, z=150)
+        )
+    ])
+    fig.update_layout(
+        title=dict(text=title, x=0.5, xanchor='center', font=dict(size=14)),
+        scene=dict(
+            xaxis=dict(visible=False, showbackground=False),
+            yaxis=dict(visible=False, showbackground=False),
+            zaxis=dict(visible=False, showbackground=False),
+            aspectmode='data',
+            bgcolor='white',
+            camera=dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0))
+        ),
+        margin=dict(r=5, l=5, b=5, t=40),
+        paper_bgcolor='white',
+        height=500
     )
-
-    # ایجاد پلاتر
-    plotter = pv.Plotter(
-        window_size=[800, 600],
-        off_screen=True,
-        border=False
-    )
-
-    # رنگ کرم روشن (شبیه گچ دندانی)
-    plotter.add_mesh(
-        pv_mesh,
-        color='#F0E6D2',  # کرم روشن
-        smooth_shading=True,
-        specular=0.3,
-        diffuse=0.8,
-        ambient=0.3,
-        show_edges=False,
-        lighting=True
-    )
-
-    # تنظیم پس‌زمینه سفید
-    plotter.background_color = 'white'
-
-    # تنظیم دوربین
-    plotter.camera_position = 'xy'  # نمای بالا
-    plotter.camera.elevation = 60   # کمی از بالا
-
-    # حذف محورها
-    plotter.remove_all_lights()
-    plotter.add_light(pv.Light(
-        position=(1, 1, 1),
-        light_type='scene light',
-        intensity=0.8
-    ))
-
-    # نمایش در Streamlit
-    stpyvista(plotter, key=f"pv_{title}")
-
-    plotter.close()
+    return fig
 
 
 # ============================================================
@@ -102,7 +106,7 @@ def render_intraoral_3d_tab():
 
     st.info("""
     **راهنما:** ابتدا اسکن فک بالا و پایین را آپلود کنید.
-    نمای سه‌بعدی با کیفیت بالا نمایش داده می‌شود.
+    سپس نمای سه‌بعدی نمایش داده می‌شود و می‌توانید با ماوس بچرخانید.
     """)
 
     col_up1, col_up2 = st.columns(2)
@@ -113,35 +117,39 @@ def render_intraoral_3d_tab():
         stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
                                          type=['stl', 'obj'], key="man_stl")
 
-    mesh_max = parse_mesh_pyvista(stl_maxilla) if stl_maxilla else None
-    mesh_man = parse_mesh_pyvista(stl_mandible) if stl_mandible else None
+    mesh_max = parse_mesh(stl_maxilla) if stl_maxilla else None
+    mesh_man = parse_mesh(stl_mandible) if stl_mandible else None
 
     if mesh_max is not None:
-        st.success(f"✅ فک بالا بارگذاری شد: {mesh_max.n_points} رأس")
+        st.success(f"✅ فک بالا بارگذاری شد: {len(mesh_max.vertices)} رأس")
     if mesh_man is not None:
-        st.success(f"✅ فک پایین بارگذاری شد: {mesh_man.n_points} رأس")
+        st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man.vertices)} رأس")
 
-    # ============ نمای سه‌بعدی ============
     if mesh_max is not None or mesh_man is not None:
         st.divider()
-        st.subheader("🖼 نمای سه‌بعدی (قابل چرخش با ماوس)")
+        st.subheader("🖼 نمای سه‌بعدی (قابل چرخش)")
 
         view_col1, view_col2 = st.columns(2)
+
         with view_col1:
             if mesh_max is not None:
                 st.markdown("**فک بالا (Maxilla)**")
                 try:
-                    render_pyvista_mesh(mesh_max, "maxilla")
+                    mesh_simple = safe_simplify_mesh(mesh_max, target_faces=20000)
+                    fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
+                    st.plotly_chart(fig_max, use_container_width=True, key="plotly_max")
                 except Exception as e:
-                    st.error(f"خطا در رندر فک بالا: {e}")
+                    st.error(f"خطا در نمایش فک بالا: {e}")
 
         with view_col2:
             if mesh_man is not None:
                 st.markdown("**فک پایین (Mandible)**")
                 try:
-                    render_pyvista_mesh(mesh_man, "mandible")
+                    mesh_simple = safe_simplify_mesh(mesh_man, target_faces=20000)
+                    fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
+                    st.plotly_chart(fig_man, use_container_width=True, key="plotly_man")
                 except Exception as e:
-                    st.error(f"خطا در رندر فک پایین: {e}")
+                    st.error(f"خطا در نمایش فک پایین: {e}")
 
         # ============ اندازه‌گیری دستی ============
         st.divider()
@@ -184,6 +192,5 @@ def render_intraoral_3d_tab():
         with res_col2:
             diff_ant = round(ant_ratio - 77.2, 2)
             st.metric("Anterior Bolton (Norm: 77.2%)", f"{ant_ratio}%", f"{diff_ant}%")
-
     else:
         st.info("💡 برای شروع، لطفاً حداقل یک فایل STL/OBJ آپلود کنید.")
