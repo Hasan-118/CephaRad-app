@@ -3,93 +3,32 @@ import trimesh
 import numpy as np
 import plotly.graph_objects as go
 import io
-from scipy.spatial import cKDTree
+from PIL import Image, ImageDraw
 
 # ============================================================
 # توابع کمکی
 # ============================================================
 
-def parse_mesh(uploaded_file):
-    """بارگذاری فایل mesh با مدیریت خطای کامل"""
+def parse_mesh_simple(uploaded_file):
+    """بارگذاری ساده فایل mesh"""
     if uploaded_file is None:
         return None
     try:
         file_bytes = uploaded_file.read()
         if len(file_bytes) == 0:
-            st.error(f"❌ فایل `{uploaded_file.name}` خالی است.")
             return None
-
         file_type = uploaded_file.name.split('.')[-1].lower()
         mesh = trimesh.load(io.BytesIO(file_bytes), file_type=file_type, force='mesh')
-
         if isinstance(mesh, trimesh.Scene):
             mesh = mesh.dump(concatenate=True)
-
-        if not hasattr(mesh, 'vertices') or len(mesh.vertices) == 0:
-            st.error(f"❌ مش `{uploaded_file.name}` رأس ندارد.")
-            return None
-
-        # نرمال‌سازی مقیاس
-        extents = mesh.extents
-        max_dim = np.max(extents)
-        if max_dim < 10.0:
-            mesh.apply_scale(10.0)
-        elif max_dim > 300.0:
-            mesh.apply_scale(0.1)
-
         return mesh
     except Exception as e:
-        st.error(f"❌ خطا در `{uploaded_file.name}`: {type(e).__name__}: {e}")
+        st.error(f"خطا در بارگذاری: {e}")
         return None
 
 
-def safe_simplify_mesh(mesh, target_faces=10000):
-    """
-    کاهش تراکم مش با روش‌های مطمئن (چند مرحله‌ای)
-    """
-    if mesh is None:
-        return None
-
-    current_faces = len(mesh.faces)
-
-    if current_faces <= target_faces:
-        return mesh
-
-    try:
-        return mesh.simplify_quadratic_decimation(target_faces)
-    except Exception:
-        pass
-
-    try:
-        ratio = target_faces / current_faces
-        if hasattr(mesh, 'simplify_quadric_decimation'):
-            return mesh.simplify_quadric_decimation(target_faces)
-    except Exception:
-        pass
-
-    try:
-        if current_faces > target_faces:
-            np.random.seed(42)
-            keep_indices = np.random.choice(current_faces, target_faces, replace=False)
-            keep_indices = np.sort(keep_indices)
-
-            new_faces = mesh.faces[keep_indices]
-            used_vertices = np.unique(new_faces)
-            new_vertices = mesh.vertices[used_vertices]
-
-            index_map = np.zeros(len(mesh.vertices), dtype=np.int64)
-            index_map[used_vertices] = np.arange(len(used_vertices))
-            new_faces = index_map[new_faces]
-
-            return trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
-    except Exception:
-        pass
-
-    return mesh
-
-
-def create_3d_plotly_figure(mesh, title="3D Intraoral Scan", color='lightpink'):
-    """رندر تعاملی سه بعدی"""
+def create_clear_3d_figure(mesh, title="3D Scan"):
+    """رندر واضح سه‌بعدی با یک رنگ ساده"""
     if mesh is None:
         return None
     vertices = mesh.vertices
@@ -99,89 +38,99 @@ def create_3d_plotly_figure(mesh, title="3D Intraoral Scan", color='lightpink'):
         go.Mesh3d(
             x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
             i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-            color=color, opacity=0.9,
-            lighting=dict(ambient=0.5, diffuse=0.8, roughness=0.3, specular=0.2)
+            color='#E8D4B8',  # رنگ کرم روشن (شبیه گچ دندانی)
+            opacity=1.0,
+            flatshading=False,
+            lighting=dict(
+                ambient=0.7,
+                diffuse=0.9,
+                specular=0.3,
+                roughness=0.4,
+                fresnel=0.1
+            ),
+            lightposition=dict(x=100, y=200, z=150)
         )
     ])
     fig.update_layout(
-        title=title,
-        scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                   zaxis=dict(visible=False), aspectmode='data'),
-        margin=dict(r=10, l=10, b=10, t=40)
+        title=dict(text=title, x=0.5, xanchor='center', font=dict(size=16)),
+        scene=dict(
+            xaxis=dict(visible=False, showbackground=False),
+            yaxis=dict(visible=False, showbackground=False),
+            zaxis=dict(visible=False, showbackground=False),
+            aspectmode='data',
+            bgcolor='white',
+            camera=dict(
+                eye=dict(x=0, y=0, z=2.5),  # نمای بالا
+                up=dict(x=0, y=1, z=0)
+            )
+        ),
+        margin=dict(r=5, l=5, b=5, t=40),
+        paper_bgcolor='white'
     )
     return fig
 
 
-# ============================================================
-# سگمنتیشن
-# ============================================================
+def render_occlusal_view(mesh, img_size=800):
+    """
+    رندر نمای اکلوزال (از بالا) به صورت تصویر دوبعدی
+    برای کلیک کاربر روی نقاط مرزی دندان‌ها
+    """
+    if mesh is None:
+        return None, None, None
 
-def compute_vertex_curvature(mesh, k_neighbors=20):
-    """محاسبه انحنای تقریبی هر رأس با PCA"""
     vertices = mesh.vertices
-    tree = cKDTree(vertices)
-    _, indices = tree.query(vertices, k=k_neighbors)
 
-    curvatures = np.zeros(len(vertices))
-    for i in range(len(vertices)):
-        neighbors = vertices[indices[i]]
-        center = neighbors.mean(axis=0)
-        centered = neighbors - center
-        cov = np.dot(centered.T, centered) / len(neighbors)
-        eigenvalues = np.linalg.eigvalsh(cov)
-        total = np.sum(eigenvalues) + 1e-9
-        curvatures[i] = eigenvalues[0] / total
-    return curvatures
+    # محاسبه bounding box
+    x_min, y_min, z_min = vertices.min(axis=0)
+    x_max, y_max, z_max = vertices.max(axis=0)
 
+    # نرمال‌سازی مختصات به تصویر
+    x_range = x_max - x_min
+    y_range = y_max - y_min
 
-def segment_teeth_from_gingiva(mesh, curvature_threshold=0.02):
-    """جداسازی دندان از لثه بر اساس انحنا"""
-    curvatures = compute_vertex_curvature(mesh)
-    curv_norm = (curvatures - curvatures.min()) / (curvatures.max() - curvatures.min() + 1e-9)
-    teeth_mask = curv_norm > curvature_threshold
-    return teeth_mask, curvatures
+    # اضافه کردن padding
+    pad_ratio = 0.1
+    pad_x = x_range * pad_ratio
+    pad_y = y_range * pad_ratio
 
+    x_min -= pad_x
+    x_max += pad_x
+    y_min -= pad_y
+    y_max += pad_y
 
-def render_segmented_mesh(mesh_simple, teeth_mask_simple, title="Segmented"):
-    """نمایش مش دو رنگ (مش باید از قبل ساده‌شده باشد)"""
-    vertices = mesh_simple.vertices
-    faces = mesh_simple.faces
+    # محاسبه مقیاس
+    x_scale = (img_size - 40) / (x_max - x_min)
+    y_scale = (img_size - 40) / (y_max - y_min)
+    scale = min(x_scale, y_scale)
 
-    if len(teeth_mask_simple) != len(vertices):
-        teeth_mask_simple = np.ones(len(vertices), dtype=bool)
+    # تصویر سفید
+    img = Image.new('RGB', (img_size, img_size), 'white')
+    draw = ImageDraw.Draw(img)
 
-    face_teeth_count = teeth_mask_simple[faces].sum(axis=1)
-    face_is_teeth = face_teeth_count >= 2
+    # رسم نقاط مش (نمای اکلوزال)
+    # از بالا نگاه می‌کنیم: x افقی، y عمودی، z ارتفاع
+    # فقط نقاطی که z بالاتر است (سطح اکلوزال) رسم می‌شوند
 
-    teeth_faces = faces[face_is_teeth]
-    gingiva_faces = faces[~face_is_teeth]
+    # ضخامت بر اساس z
+    z_threshold = z_min + (z_max - z_min) * 0.3  # 30٪ بالایی
 
-    fig = go.Figure()
+    for v in vertices:
+        if v[2] > z_threshold:  # فقط نقاط سطح بالا
+            px = int((v[0] - x_min) * scale + 20)
+            py = int(img_size - (v[1] - y_min) * scale - 20)
 
-    if len(gingiva_faces) > 0:
-        fig.add_trace(go.Mesh3d(
-            x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
-            i=gingiva_faces[:, 0], j=gingiva_faces[:, 1], k=gingiva_faces[:, 2],
-            color='lightpink', opacity=0.7, name='لثه',
-            lighting=dict(ambient=0.5, diffuse=0.8)
-        ))
+            if 0 <= px < img_size and 0 <= py < img_size:
+                # شدت رنگ بر اساس ارتفاع
+                intensity = int(200 - 100 * (v[2] - z_threshold) / (z_max - z_threshold + 1e-9))
+                intensity = max(80, min(200, intensity))
+                draw.point((px, py), fill=(intensity, intensity, intensity))
 
-    if len(teeth_faces) > 0:
-        fig.add_trace(go.Mesh3d(
-            x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
-            i=teeth_faces[:, 0], j=teeth_faces[:, 1], k=teeth_faces[:, 2],
-            color='white', opacity=0.95, name='دندان',
-            lighting=dict(ambient=0.6, diffuse=0.9)
-        ))
+    # تبدیل به bytes
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    img_bytes = buf.getvalue()
 
-    fig.update_layout(
-        title=title,
-        scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                   zaxis=dict(visible=False), aspectmode='data'),
-        margin=dict(r=10, l=10, b=10, t=40),
-        showlegend=True
-    )
-    return fig
+    return img, img_bytes, (x_min, x_max, y_min, y_max, scale, img_size)
 
 
 # ============================================================
@@ -189,11 +138,12 @@ def render_segmented_mesh(mesh_simple, teeth_mask_simple, title="Segmented"):
 # ============================================================
 
 def render_intraoral_3d_tab():
-    st.header("🦷 آنالیز سه بعدی اسکن داخل دهانی (نیمه‌خودکار)")
+    st.header("🦷 آنالیز سه بعدی اسکن داخل دهانی")
 
     st.info("""
-    **راهنما:** ابتدا اسکن را آپلود کنید. برنامه سگمنتیشن اولیه را انجام می‌دهد.
-    با تغییر آستانه انحنا در سایدبار می‌توانید نتیجه را دقیق‌تر کنید.
+    **راهنما:** ابتدا اسکن فک بالا و پایین را آپلود کنید.
+    سپس نمای سه‌بعدی و نمای اکلوزال (از بالا) نمایش داده می‌شود.
+    برای اندازه‌گیری، روی نمای اکلوزال کلیک کنید و نقاط مرزی دندان‌ها را مشخص کنید.
     """)
 
     col_up1, col_up2 = st.columns(2)
@@ -204,131 +154,56 @@ def render_intraoral_3d_tab():
         stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
                                          type=['stl', 'obj'], key="man_stl")
 
-    # === بارگذاری مستقیم (بدون کش) ===
-    mesh_max_orig = None
-    mesh_man_orig = None
+    mesh_max = parse_mesh_simple(stl_maxilla) if stl_maxilla else None
+    mesh_man = parse_mesh_simple(stl_mandible) if stl_mandible else None
 
-    if stl_maxilla is not None:
-        try:
-            file_bytes = stl_maxilla.read()
-            if len(file_bytes) > 0:
-                mesh_max_orig = trimesh.load(
-                    io.BytesIO(file_bytes),
-                    file_type='stl',
-                    force='mesh'
-                )
-                if isinstance(mesh_max_orig, trimesh.Scene):
-                    mesh_max_orig = mesh_max_orig.dump(concatenate=True)
+    if mesh_max is not None:
+        st.success(f"✅ فک بالا بارگذاری شد: {len(mesh_max.vertices)} رأس")
+    if mesh_man is not None:
+        st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man.vertices)} رأس")
 
-                max_dim = np.max(mesh_max_orig.extents)
-                if max_dim < 10.0:
-                    mesh_max_orig.apply_scale(10.0)
-                elif max_dim > 300.0:
-                    mesh_max_orig.apply_scale(0.1)
-
-                st.success(f"✅ فک بالا بارگذاری شد: {len(mesh_max_orig.vertices)} رأس")
-        except Exception as e:
-            st.error(f"❌ خطا در فک بالا: {type(e).__name__}: {e}")
-            mesh_max_orig = None
-
-    if stl_mandible is not None:
-        try:
-            file_bytes = stl_mandible.read()
-            if len(file_bytes) > 0:
-                mesh_man_orig = trimesh.load(
-                    io.BytesIO(file_bytes),
-                    file_type='stl',
-                    force='mesh'
-                )
-                if isinstance(mesh_man_orig, trimesh.Scene):
-                    mesh_man_orig = mesh_man_orig.dump(concatenate=True)
-
-                max_dim = np.max(mesh_man_orig.extents)
-                if max_dim < 10.0:
-                    mesh_man_orig.apply_scale(10.0)
-                elif max_dim > 300.0:
-                    mesh_man_orig.apply_scale(0.1)
-
-                st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man_orig.vertices)} رأس")
-        except Exception as e:
-            st.error(f"❌ خطا در فک پایین: {type(e).__name__}: {e}")
-            mesh_man_orig = None
-
-    # --- تنظیمات سایدبار ---
-    st.sidebar.markdown("### ⚙️ تنظیمات سگمنتیشن")
-    curvature_thresh = st.sidebar.slider(
-        "آستانه انحنا:", 0.005, 0.10, 0.02, 0.001,
-        help="بالاتر = دندان کمتر تشخیص داده می‌شود"
-    )
-
-    # --- اگر مش‌ها بارگذاری شدند ---
-    if mesh_max_orig is not None or mesh_man_orig is not None:
-
-        # ============ سگمنتیشن ============
+    # ============ نمای سه‌بعدی واضح ============
+    if mesh_max is not None or mesh_man is not None:
         st.divider()
-        st.subheader("🔬 سگمنتیشن اولیه (جدا کردن دندان از لثه)")
+        st.subheader("🖼 نمای سه‌بعدی (قابل چرخش با ماوس)")
 
-        seg_col1, seg_col2 = st.columns(2)
-
-        # --- فک بالا ---
-        with seg_col1:
-            if mesh_max_orig is not None:
+        view_col1, view_col2 = st.columns(2)
+        with view_col1:
+            if mesh_max is not None:
                 st.markdown("**فک بالا (Maxilla)**")
-                try:
-                    with st.spinner("در حال محاسبه انحنا..."):
-                        teeth_mask_max, _ = segment_teeth_from_gingiva(
-                            mesh_max_orig, curvature_threshold=curvature_thresh
-                        )
-                        teeth_percent_max = (teeth_mask_max.sum() / len(teeth_mask_max)) * 100
-                        st.caption(f"🦷 دندان‌های تشخیص داده‌شده: {teeth_percent_max:.1f}%")
+                fig_max = create_clear_3d_figure(mesh_max, "Maxillary Arch")
+                st.plotly_chart(fig_max, use_container_width=True, key="3d_max")
 
-                    mesh_max_simple = safe_simplify_mesh(mesh_max_orig, target_faces=40000)
-
-                    if len(mesh_max_simple.vertices) == len(mesh_max_orig.vertices):
-                        mask_max_simple = teeth_mask_max
-                    else:
-                        tree = cKDTree(mesh_max_orig.vertices)
-                        _, idx = tree.query(mesh_max_simple.vertices, k=1)
-                        mask_max_simple = teeth_mask_max[idx]
-
-                    fig_seg_max = render_segmented_mesh(
-                        mesh_max_simple, mask_max_simple, "Maxilla - Segmented"
-                    )
-                    st.plotly_chart(fig_seg_max, use_container_width=True, key="fig_seg_max_v2")
-                except Exception as e:
-                    st.error(f"خطا در سگمنتیشن فک بالا: {type(e).__name__}: {e}")
-            else:
-                st.info("فک بالا آپلود نشده")
-
-        # --- فک پایین ---
-        with seg_col2:
-            if mesh_man_orig is not None:
+        with view_col2:
+            if mesh_man is not None:
                 st.markdown("**فک پایین (Mandible)**")
-                try:
-                    with st.spinner("در حال محاسبه انحنا..."):
-                        teeth_mask_man, _ = segment_teeth_from_gingiva(
-                            mesh_man_orig, curvature_threshold=curvature_thresh
-                        )
-                        teeth_percent_man = (teeth_mask_man.sum() / len(teeth_mask_man)) * 100
-                        st.caption(f"🦷 دندان‌های تشخیص داده‌شده: {teeth_percent_man:.1f}%")
+                fig_man = create_clear_3d_figure(mesh_man, "Mandibular Arch")
+                st.plotly_chart(fig_man, use_container_width=True, key="3d_man")
 
-                    mesh_man_simple = safe_simplify_mesh(mesh_man_orig, target_faces=40000)
+        # ============ نمای اکلوزال (از بالا) ============
+        st.divider()
+        st.subheader("📐 نمای اکلوزال (از بالا) - برای اندازه‌گیری")
 
-                    if len(mesh_man_simple.vertices) == len(mesh_man_orig.vertices):
-                        mask_man_simple = teeth_mask_man
-                    else:
-                        tree = cKDTree(mesh_man_orig.vertices)
-                        _, idx = tree.query(mesh_man_simple.vertices, k=1)
-                        mask_man_simple = teeth_mask_man[idx]
+        st.caption("""
+        این نمای دوبعدی از بالای مش گرفته شده است. 
+        برای اندازه‌گیری، روی نقاط مرزی دندان‌ها کلیک کنید.
+        """)
 
-                    fig_seg_man = render_segmented_mesh(
-                        mesh_man_simple, mask_man_simple, "Mandible - Segmented"
-                    )
-                    st.plotly_chart(fig_seg_man, use_container_width=True, key="fig_seg_man_v2")
-                except Exception as e:
-                    st.error(f"خطا در سگمنتیشن فک پایین: {type(e).__name__}: {e}")
-            else:
-                st.info("فک پایین آپلود نشده")
+        occ_col1, occ_col2 = st.columns(2)
+
+        with occ_col1:
+            if mesh_max is not None:
+                st.markdown("**فک بالا - نمای اکلوزال**")
+                img_max, _, _ = render_occlusal_view(mesh_max, img_size=800)
+                if img_max is not None:
+                    st.image(img_max, caption="Maxillary Occlusal View", use_container_width=True)
+
+        with occ_col2:
+            if mesh_man is not None:
+                st.markdown("**فک پایین - نمای اکلوزال**")
+                img_man, _, _ = render_occlusal_view(mesh_man, img_size=800)
+                if img_man is not None:
+                    st.image(img_man, caption="Mandibular Occlusal View", use_container_width=True)
 
         # ============ اندازه‌گیری دستی ============
         st.divider()
@@ -368,8 +243,22 @@ def render_intraoral_3d_tab():
         with res_col1:
             diff_overall = round(overall_ratio - 91.3, 2)
             st.metric("Overall Bolton (Norm: 91.3%)", f"{overall_ratio}%", f"{diff_overall}%")
+            if overall_ratio > 92.5:
+                st.warning("⚠️ اضافه حجم دندانی در فک پایین")
+            elif overall_ratio < 90.0:
+                st.info("ℹ️ اضافه حجم دندانی در فک بالا")
+            else:
+                st.success("✅ نسبت کلی متوازن است.")
+
         with res_col2:
             diff_ant = round(ant_ratio - 77.2, 2)
             st.metric("Anterior Bolton (Norm: 77.2%)", f"{ant_ratio}%", f"{diff_ant}%")
+            if ant_ratio > 78.5:
+                st.warning("⚠️ اضافه حجم دندان‌های قدامی فک پایین")
+            elif ant_ratio < 75.5:
+                st.info("ℹ️ اضافه حجم دندان‌های قدامی فک بالا")
+            else:
+                st.success("✅ نسبت قدامی متوازن است.")
+
     else:
         st.info("💡 برای شروع، لطفاً حداقل یک فایل STL/OBJ آپلود کنید.")
