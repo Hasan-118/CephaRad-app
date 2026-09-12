@@ -3,6 +3,9 @@ import trimesh
 import numpy as np
 import io
 import plotly.graph_objects as go
+from PIL import Image, ImageDraw
+from streamlit_image_coordinates import streamlit_image_coordinates
+
 
 # ============================================================
 # توابع کمکی
@@ -92,9 +95,103 @@ def create_3d_plotly_figure(mesh, title="3D Scan"):
         ),
         margin=dict(r=5, l=5, b=5, t=40),
         paper_bgcolor='white',
-        height=500
+        height=450
     )
     return fig
+
+
+def render_occlusal_view(mesh, img_size=800, highlight_z_percentile=30):
+    """
+    رندر نمای اکلوزال (از بالا) به صورت تصویر دوبعدی
+    برای کلیک کاربر
+    """
+    if mesh is None:
+        return None, None
+
+    vertices = mesh.vertices
+
+    x_min, y_min, z_min = vertices.min(axis=0)
+    x_max, y_max, z_max = vertices.max(axis=0)
+
+    pad_ratio = 0.08
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    x_min -= x_range * pad_ratio
+    x_max += x_range * pad_ratio
+    y_min -= y_range * pad_ratio
+    y_max += y_range * pad_ratio
+
+    x_scale = (img_size - 60) / (x_max - x_min)
+    y_scale = (img_size - 60) / (y_max - y_min)
+    scale = min(x_scale, y_scale)
+
+    img = Image.new('RGB', (img_size, img_size), 'white')
+    draw = ImageDraw.Draw(img)
+
+    z_threshold = z_min + (z_max - z_min) * (1 - highlight_z_percentile / 100.0)
+
+    def to_pixel(v):
+        px = int((v[0] - x_min) * scale + 30)
+        py = int(img_size - (v[1] - y_min) * scale - 30)
+        return px, py
+
+    pts = []
+    for v in vertices:
+        if v[2] > z_threshold:
+            px, py = to_pixel(v)
+            if 0 <= px < img_size and 0 <= py < img_size:
+                pts.append((px, py, v[2]))
+
+    for px, py, z in pts:
+        intensity = int(220 - 120 * (z - z_threshold) / (z_max - z_threshold + 1e-9))
+        intensity = max(60, min(220, intensity))
+        draw.ellipse([px-1, py-1, px+1, py+1], fill=(intensity, intensity, intensity))
+
+    return img, (x_min, x_max, y_min, y_max, scale, img_size, z_threshold)
+
+
+def pixel_to_mm(px, py, transform, mesh):
+    """تبدیل مختصات پیکسل به میلی‌متر روی مش"""
+    if transform is None or mesh is None:
+        return None
+    x_min, x_max, y_min, y_max, scale, img_size, _ = transform
+
+    vx = (px - 30) / scale + x_min
+    vy = (img_size - py - 30) / scale + y_min
+
+    mesh_center = mesh.vertices.mean(axis=0)
+    z_est = mesh.vertices[:, 2].max() - 2.0
+
+    closest_idx = np.argmin(np.linalg.norm(
+        mesh.vertices - np.array([vx, vy, z_est]), axis=1
+    ))
+    return mesh.vertices[closest_idx]
+
+
+def compute_measurements_from_clicks(clicks, transform, mesh, pixel_size_mm=0.05):
+    """
+    محاسبه عرض مزیودیستال از کلیک‌های کاربر
+    clicks: لیست نقاط [px, py]
+    transform: (x_min, x_max, y_min, y_max, scale, img_size, z_threshold)
+    """
+    if transform is None or mesh is None or len(clicks) < 2:
+        return None
+
+    x_min, x_max, y_min, y_max, scale, img_size, _ = transform
+
+    # تبدیل پیکسل به مختصات سه‌بعدی مش
+    mm_points = []
+    for px, py in clicks:
+        vx = (px - 30) / scale + x_min
+        vy = (img_size - py - 30) / scale + y_min
+        mesh_center = mesh.vertices.mean(axis=0)
+        z_est = mesh.vertices[:, 2].max() - 2.0
+        closest_idx = np.argmin(np.linalg.norm(
+            mesh.vertices - np.array([vx, vy, z_est]), axis=1
+        ))
+        mm_points.append(mesh.vertices[closest_idx])
+
+    return np.array(mm_points)
 
 
 # ============================================================
@@ -106,7 +203,8 @@ def render_intraoral_3d_tab():
 
     st.info("""
     **راهنما:** ابتدا اسکن فک بالا و پایین را آپلود کنید.
-    سپس نمای سه‌بعدی نمایش داده می‌شود و می‌توانید با ماوس بچرخانید.
+    سپس در بخش **اندازه‌گیری دستی**، روی نمای اکلوزال کلیک کنید 
+    تا نقاط مزیال و دیستال هر دندان را مشخص کنید.
     """)
 
     col_up1, col_up2 = st.columns(2)
@@ -125,72 +223,209 @@ def render_intraoral_3d_tab():
     if mesh_man is not None:
         st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man.vertices)} رأس")
 
-    if mesh_max is not None or mesh_man is not None:
-        st.divider()
-        st.subheader("🖼 نمای سه‌بعدی (قابل چرخش)")
-
-        view_col1, view_col2 = st.columns(2)
-
-        with view_col1:
-            if mesh_max is not None:
-                st.markdown("**فک بالا (Maxilla)**")
-                try:
-                    mesh_simple = safe_simplify_mesh(mesh_max, target_faces=20000)
-                    fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
-                    st.plotly_chart(fig_max, use_container_width=True, key="plotly_max")
-                except Exception as e:
-                    st.error(f"خطا در نمایش فک بالا: {e}")
-
-        with view_col2:
-            if mesh_man is not None:
-                st.markdown("**فک پایین (Mandible)**")
-                try:
-                    mesh_simple = safe_simplify_mesh(mesh_man, target_faces=20000)
-                    fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
-                    st.plotly_chart(fig_man, use_container_width=True, key="plotly_man")
-                except Exception as e:
-                    st.error(f"خطا در نمایش فک پایین: {e}")
-
-        # ============ اندازه‌گیری دستی ============
-        st.divider()
-        st.subheader("📏 ورود دستی عرض دندان‌ها")
-
-        if 'u_ant_val' not in st.session_state: st.session_state.u_ant_val = 45.0
-        if 'u_tot_val' not in st.session_state: st.session_state.u_tot_val = 90.0
-        if 'l_ant_val' not in st.session_state: st.session_state.l_ant_val = 35.0
-        if 'l_tot_val' not in st.session_state: st.session_state.l_tot_val = 82.0
-
-        b_col1, b_col2 = st.columns(2)
-        with b_col1:
-            st.markdown("**فک بالا (Maxilla)**")
-            u_ant = st.number_input("عرض ۶ دندان قدامی بالا (mm):", 20.0, 70.0,
-                                    value=st.session_state.u_ant_val, step=0.1, key='num_u_ant')
-            u_tot = st.number_input("عرض ۱۲ دندان بالا (mm):", 50.0, 130.0,
-                                    value=st.session_state.u_tot_val, step=0.1, key='num_u_tot')
-        with b_col2:
-            st.markdown("**فک پایین (Mandible)**")
-            l_ant = st.number_input("عرض ۶ دندان قدامی پایین (mm):", 15.0, 60.0,
-                                    value=st.session_state.l_ant_val, step=0.1, key='num_l_ant')
-            l_tot = st.number_input("عرض ۱۲ دندان پایین (mm):", 40.0, 120.0,
-                                    value=st.session_state.l_tot_val, step=0.1, key='num_l_tot')
-
-        st.session_state.u_ant_val = u_ant
-        st.session_state.u_tot_val = u_tot
-        st.session_state.l_ant_val = l_ant
-        st.session_state.l_tot_val = l_tot
-
-        # ============ Bolton ============
-        st.divider()
-        st.markdown("### 🔢 نسبت‌های بولتون")
-        ant_ratio = round((l_ant / u_ant) * 100, 2) if u_ant > 0 else 0.0
-        overall_ratio = round((l_tot / u_tot) * 100, 2) if u_tot > 0 else 0.0
-
-        res_col1, res_col2 = st.columns(2)
-        with res_col1:
-            diff_overall = round(overall_ratio - 91.3, 2)
-            st.metric("Overall Bolton (Norm: 91.3%)", f"{overall_ratio}%", f"{diff_overall}%")
-        with res_col2:
-            diff_ant = round(ant_ratio - 77.2, 2)
-            st.metric("Anterior Bolton (Norm: 77.2%)", f"{ant_ratio}%", f"{diff_ant}%")
-    else:
+    if mesh_max is None and mesh_man is None:
         st.info("💡 برای شروع، لطفاً حداقل یک فایل STL/OBJ آپلود کنید.")
+        return
+
+    # ============ نمای سه‌بعدی ============
+    st.divider()
+    st.subheader("🖼 نمای سه‌بعدی (قابل چرخش)")
+
+    view_col1, view_col2 = st.columns(2)
+
+    with view_col1:
+        if mesh_max is not None:
+            st.markdown("**فک بالا (Maxilla)**")
+            try:
+                mesh_simple = safe_simplify_mesh(mesh_max, target_faces=20000)
+                fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
+                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max")
+            except Exception as e:
+                st.error(f"خطا در نمایش فک بالا: {e}")
+
+    with view_col2:
+        if mesh_man is not None:
+            st.markdown("**فک پایین (Mandible)**")
+            try:
+                mesh_simple = safe_simplify_mesh(mesh_man, target_faces=20000)
+                fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
+                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man")
+            except Exception as e:
+                st.error(f"خطا در نمایش فک پایین: {e}")
+
+    # ============ اندازه‌گیری دستی با کلیک ============
+    st.divider()
+    st.subheader("📐 اندازه‌گیری دستی از روی نمای اکلوزال")
+
+    st.caption("""
+    روی **نمای اکلوزال** (از بالا) زیر کلیک کنید تا نقاط مزیال و دیستال دندان‌ها 
+    را مشخص کنید. هر کلیک به عنوان یک نقطه مرزی ثبت می‌شود.
+    """)
+
+    measure_col1, measure_col2 = st.columns(2)
+
+    with measure_col1:
+        if mesh_max is not None:
+            st.markdown("**فک بالا - نمای اکلوزال**")
+            img_max, transform_max = render_occlusal_view(mesh_max, img_size=800)
+
+            if img_max is not None:
+                # ذخیره نقاط کلیک‌شده
+                if 'clicks_max' not in st.session_state:
+                    st.session_state.clicks_max = []
+
+                # نمایش تصویر با کلیک
+                res = streamlit_image_coordinates(
+                    img_max, key="occlusal_max_click"
+                )
+
+                if res:
+                    new_click = [res["x"], res["y"]]
+                    # بررسی تکراری نبودن
+                    is_duplicate = False
+                    for existing in st.session_state.clicks_max:
+                        if abs(existing[0] - new_click[0]) < 5 and \
+                           abs(existing[1] - new_click[1]) < 5:
+                            is_duplicate = True
+                            break
+
+                    if not is_duplicate:
+                        st.session_state.clicks_max.append(new_click)
+                        st.rerun()
+
+                # نمایش تصویر با نقاط علامت‌گذاری‌شده
+                img_display = img_max.copy()
+                draw_display = ImageDraw.Draw(img_display)
+                for i, (px, py) in enumerate(st.session_state.clicks_max):
+                    draw_display.ellipse([px-5, py-5, px+5, py+5],
+                                         fill="red", outline="white", width=2)
+                    draw_display.text((px+8, py-8), str(i+1), fill="red")
+
+                st.image(img_display, caption=f"کلیک‌ها: {len(st.session_state.clicks_max)}",
+                         use_container_width=True)
+
+                st.caption(f"🖱 نقاط ثبت‌شده: {len(st.session_state.clicks_max)}")
+
+                if st.button("🗑 پاک کردن کلیک‌های فک بالا", key="clear_max"):
+                    st.session_state.clicks_max = []
+                    st.rerun()
+
+                # محاسبه فاصله بین نقاط
+                if len(st.session_state.clicks_max) >= 2:
+                    if 'u_ant_val' not in st.session_state:
+                        st.session_state.u_ant_val = 45.0
+                    if 'u_tot_val' not in st.session_state:
+                        st.session_state.u_tot_val = 90.0
+
+    with measure_col2:
+        if mesh_man is not None:
+            st.markdown("**فک پایین - نمای اکلوزال**")
+            img_man, transform_man = render_occlusal_view(mesh_man, img_size=800)
+
+            if img_man is not None:
+                if 'clicks_man' not in st.session_state:
+                    st.session_state.clicks_man = []
+
+                res = streamlit_image_coordinates(
+                    img_man, key="occlusal_man_click"
+                )
+
+                if res:
+                    new_click = [res["x"], res["y"]]
+                    is_duplicate = False
+                    for existing in st.session_state.clicks_man:
+                        if abs(existing[0] - new_click[0]) < 5 and \
+                           abs(existing[1] - new_click[1]) < 5:
+                            is_duplicate = True
+                            break
+
+                    if not is_duplicate:
+                        st.session_state.clicks_man.append(new_click)
+                        st.rerun()
+
+                img_display = img_man.copy()
+                draw_display = ImageDraw.Draw(img_display)
+                for i, (px, py) in enumerate(st.session_state.clicks_man):
+                    draw_display.ellipse([px-5, py-5, px+5, py+5],
+                                         fill="blue", outline="white", width=2)
+                    draw_display.text((px+8, py-8), str(i+1), fill="blue")
+
+                st.image(img_display, caption=f"کلیک‌ها: {len(st.session_state.clicks_man)}",
+                         use_container_width=True)
+
+                st.caption(f"🖱 نقاط ثبت‌شده: {len(st.session_state.clicks_man)}")
+
+                if st.button("🗑 پاک کردن کلیک‌های فک پایین", key="clear_man"):
+                    st.session_state.clicks_man = []
+                    st.rerun()
+
+                if 'l_ant_val' not in st.session_state:
+                    st.session_state.l_ant_val = 35.0
+                if 'l_tot_val' not in st.session_state:
+                    st.session_state.l_tot_val = 82.0
+
+    # ============ ورود مقادیر نهایی و Bolton ============
+    st.divider()
+    st.subheader("📏 ورود نهایی عرض دندان‌ها (از کلیک یا دستی)")
+
+    b_col1, b_col2 = st.columns(2)
+    with b_col1:
+        st.markdown("**فک بالا (Maxilla)**")
+        u_ant = st.number_input("عرض ۶ دندان قدامی بالا (mm):", 20.0, 70.0,
+                                value=st.session_state.u_ant_val, step=0.1,
+                                key='num_u_ant')
+        u_tot = st.number_input("عرض ۱۲ دندان بالا (mm):", 50.0, 130.0,
+                                value=st.session_state.u_tot_val, step=0.1,
+                                key='num_u_tot')
+    with b_col2:
+        st.markdown("**فک پایین (Mandible)**")
+        l_ant = st.number_input("عرض ۶ دندان قدامی پایین (mm):", 15.0, 60.0,
+                                value=st.session_state.l_ant_val, step=0.1,
+                                key='num_l_ant')
+        l_tot = st.number_input("عرض ۱۲ دندان پایین (mm):", 40.0, 120.0,
+                                value=st.session_state.l_tot_val, step=0.1,
+                                key='num_l_tot')
+
+    st.session_state.u_ant_val = u_ant
+    st.session_state.u_tot_val = u_tot
+    st.session_state.l_ant_val = l_ant
+    st.session_state.l_tot_val = l_tot
+
+    # ============ Bolton ============
+    st.divider()
+    st.markdown("### 🔢 نسبت‌های بولتون")
+    ant_ratio = round((l_ant / u_ant) * 100, 2) if u_ant > 0 else 0.0
+    overall_ratio = round((l_tot / u_tot) * 100, 2) if u_tot > 0 else 0.0
+
+    res_col1, res_col2 = st.columns(2)
+    with res_col1:
+        diff_overall = round(overall_ratio - 91.3, 2)
+        st.metric("Overall Bolton (Norm: 91.3%)", f"{overall_ratio}%", f"{diff_overall}%")
+        if overall_ratio > 92.5:
+            st.warning("⚠️ اضافه حجم دندانی در فک پایین")
+        elif overall_ratio < 90.0:
+            st.info("ℹ️ اضافه حجم دندانی در فک بالا")
+        else:
+            st.success("✅ نسبت کلی متوازن است.")
+
+    with res_col2:
+        diff_ant = round(ant_ratio - 77.2, 2)
+        st.metric("Anterior Bolton (Norm: 77.2%)", f"{ant_ratio}%", f"{diff_ant}%")
+        if ant_ratio > 78.5:
+            st.warning("⚠️ اضافه حجم دندانی در فک پایین (قدامی)")
+        elif ant_ratio < 75.5:
+            st.info("ℹ️ اضافه حجم دندانی در فک بالا (قدامی)")
+        else:
+            st.success("✅ نسبت قدامی متوازن است.")
+
+    # ============ ذخیره نتایج ۳D در session_state برای PDF ============
+    st.session_state.bolton_3d = {
+        "u_ant": u_ant,
+        "u_tot": u_tot,
+        "l_ant": l_ant,
+        "l_tot": l_tot,
+        "ant_ratio": ant_ratio,
+        "overall_ratio": overall_ratio,
+        "clicks_max": st.session_state.get('clicks_max', []),
+        "clicks_man": st.session_state.get('clicks_man', [])
+    }
