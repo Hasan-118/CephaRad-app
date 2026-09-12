@@ -8,7 +8,7 @@ from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# --- تلاش برای بارگذاری فونت وزیر ---
+
 def _register_font():
     font_path = "Vazir.ttf"
     if os.path.exists(font_path):
@@ -18,6 +18,7 @@ def _register_font():
         except Exception:
             pass
     return 'Helvetica'
+
 
 FONT_NAME = _register_font()
 
@@ -30,20 +31,16 @@ except ImportError:
 
 
 def _reshape(text):
-    """تبدیل متن فارسی برای ReportLab"""
     if not HAS_FA_SUPPORT or not text:
         return str(text)
-    reshaped = arabic_reshaper.reshape(str(text))
-    return get_display(reshaped)
+    try:
+        reshaped = arabic_reshaper.reshape(str(text))
+        return get_display(reshaped)
+    except Exception:
+        return str(text)
 
 
-def generate_unified_report(ceph_results):
-    """
-    تولید PDF یکپارچه شامل:
-    - اطلاعات بیمار
-    - خلاصه تحلیل سفالومتری (۲D)
-    - خلاصه تحلیل اسکن داخل دهانی (۳D)
-    """
+def generate_unified_report(ceph_results, bolton_3d=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=letter,
@@ -79,13 +76,16 @@ def generate_unified_report(ceph_results):
 
     elements = []
 
-    # --- عنوان ---
-    elements.append(Paragraph(_reshape("گزارش جامع ارتودنسی - Aariz Precision"), title_style))
-    elements.append(Paragraph("Aariz Comprehensive Orthodontic Report",
-                              ParagraphStyle('Sub', parent=normal_style, alignment=1, textColor=colors.grey)))
+    elements.append(Paragraph(
+        _reshape("گزارش جامع ارتودنسی - Aariz Precision"),
+        title_style
+    ))
+    elements.append(Paragraph(
+        "Aariz Comprehensive Orthodontic Report",
+        ParagraphStyle('Sub', parent=normal_style, alignment=1, textColor=colors.grey)
+    ))
     elements.append(Spacer(1, 10))
 
-    # --- اطلاعات بیمار ---
     patient = ceph_results.get('patient_info', {})
     info_data = [
         [Paragraph(_reshape(f"جنسیت: {patient.get('gender', 'نامشخص')}"), body_cell),
@@ -103,7 +103,6 @@ def generate_unified_report(ceph_results):
     elements.append(info_table)
     elements.append(Spacer(1, 12))
 
-    # --- بخش ۱: تحلیل سفالومتری ---
     elements.append(Paragraph(_reshape("۱. تحلیل سفالومتری (۲D)"), section_style))
 
     m = ceph_results.get('measurements', {})
@@ -145,51 +144,130 @@ def generate_unified_report(ceph_results):
     elements.append(norms_table)
     elements.append(Spacer(1, 10))
 
-    # --- تفسیر بالینی ---
     interp = ceph_results.get('interpretations', {})
     if interp:
-        elements.append(Paragraph(_reshape("تفسیر بالینی:"),
-                                  ParagraphStyle('SubSec', parent=normal_style, fontSize=11, textColor=colors.HexColor('#1E40AF'))))
+        elements.append(Paragraph(
+            _reshape("تفسیر بالینی:"),
+            ParagraphStyle('SubSec', parent=normal_style, fontSize=11,
+                           textColor=colors.HexColor('#1E40AF'))
+        ))
         for cat, desc in interp.items():
             elements.append(Paragraph(f"• <b>{_reshape(cat)}</b>", normal_style))
-            elements.append(Paragraph(_reshape(desc),
-                                      ParagraphStyle('Indent', parent=normal_style, leftIndent=15, textColor=colors.HexColor('#374151'))))
+            elements.append(Paragraph(
+                _reshape(desc),
+                ParagraphStyle('Indent', parent=normal_style, leftIndent=15,
+                               textColor=colors.HexColor('#374151'))
+            ))
             elements.append(Spacer(1, 4))
 
-    # --- طرح درمان ---
     plan = ceph_results.get('treatment_plan', [])
     if plan:
         elements.append(Spacer(1, 6))
-        elements.append(Paragraph(_reshape("طرح درمان پیشنهادی:"),
-                                  ParagraphStyle('SubSec2', parent=normal_style, fontSize=11, textColor=colors.HexColor('#1E40AF'))))
+        elements.append(Paragraph(
+            _reshape("طرح درمان پیشنهادی:"),
+            ParagraphStyle('SubSec2', parent=normal_style, fontSize=11,
+                           textColor=colors.HexColor('#1E40AF'))
+        ))
         for idx, item in enumerate(plan, 1):
             title = item.get('title', '')
             desc = item.get('desc', '')
             elements.append(Paragraph(f"{idx}. <b>{_reshape(title)}</b>", normal_style))
-            elements.append(Paragraph(_reshape(desc),
-                                      ParagraphStyle('Indent2', parent=normal_style, leftIndent=15, textColor=colors.HexColor('#374151'))))
+            elements.append(Paragraph(
+                _reshape(desc),
+                ParagraphStyle('Indent2', parent=normal_style, leftIndent=15,
+                               textColor=colors.HexColor('#374151'))
+            ))
             elements.append(Spacer(1, 4))
 
-    # --- بخش ۲: تحلیل سه‌بعدی ---
     elements.append(Spacer(1, 15))
     elements.append(Paragraph(_reshape("۲. تحلیل اسکن داخل دهانی (۳D)"), section_style))
 
-    elements.append(Paragraph(_reshape(
-        "تحلیل سه‌بعدی شامل محاسبه نسبت‌های بولتون (Bolton Analysis) و "
-        "ارزیابی فضای قوس دندانی (Space Analysis) در این گزارش ارائه شده است."
-    ), normal_style))
-    elements.append(Spacer(1, 8))
+    if bolton_3d:
+        bolton_data = [
+            [Paragraph(_reshape("وضعیت"), header_cell),
+             Paragraph(_reshape("مقدار"), header_cell),
+             Paragraph(_reshape("نرمال"), header_cell),
+             Paragraph(_reshape("پارامتر"), header_cell)],
+            [Paragraph(_reshape("Overall"), body_cell),
+             Paragraph(f"{bolton_3d.get('overall_ratio', 'N/A')}%", body_cell),
+             Paragraph("91.3%", body_cell),
+             Paragraph("Overall Bolton Ratio", body_cell)],
+            [Paragraph(_reshape("Anterior"), body_cell),
+             Paragraph(f"{bolton_3d.get('ant_ratio', 'N/A')}%", body_cell),
+             Paragraph("77.2%", body_cell),
+             Paragraph("Anterior Bolton Ratio", body_cell)],
+        ]
+        bolton_table = Table(bolton_data, colWidths=[120, 100, 100, 220])
+        bolton_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+            ('PADDING', (0, 0), (-1, -1), 5),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elements.append(bolton_table)
+        elements.append(Spacer(1, 8))
 
-    elements.append(Paragraph(_reshape(
-        "⚠ توجه: برای درج دقیق نتایج ۳D (نسبت‌های بولتون و Space Analysis)، "
-        "لطفاً از اپلیکیشن ۳D استفاده کنید و پس از تکمیل تحلیل، این گزارش را تولید نمایید."
-    ), ParagraphStyle('Note', parent=normal_style, textColor=colors.HexColor('#B45309'))))
+        widths_data = [
+            [Paragraph(f"{bolton_3d.get('u_tot', 'N/A')} mm", body_cell),
+             Paragraph(f"{bolton_3d.get('u_ant', 'N/A')} mm", body_cell),
+             Paragraph(_reshape("فک بالا"), body_cell)],
+            [Paragraph(f"{bolton_3d.get('l_tot', 'N/A')} mm", body_cell),
+             Paragraph(f"{bolton_3d.get('l_ant', 'N/A')} mm", body_cell),
+             Paragraph(_reshape("فک پایین"), body_cell)],
+        ]
+        widths_table = Table(widths_data, colWidths=[150, 150, 240])
+        widths_table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D1D5DB')),
+            ('PADDING', (0, 0), (-1, -1), 5),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elements.append(Paragraph(
+            _reshape("عرض دندان‌های اندازه‌گیری‌شده (Total / Anterior):"),
+            normal_style
+        ))
+        elements.append(widths_table)
 
-    # --- امضا و تاریخ ---
+        elements.append(Spacer(1, 8))
+        overall = bolton_3d.get('overall_ratio', 0)
+        ant = bolton_3d.get('ant_ratio', 0)
+        bolton_interp = ""
+        if overall > 92.5:
+            bolton_interp += _reshape("• Overall Bolton بالاتر از نرمال: اضافه حجم دندانی در فک پایین.<br/>")
+        elif overall < 90.0:
+            bolton_interp += _reshape("• Overall Bolton پایین‌تر از نرمال: اضافه حجم دندانی در فک بالا.<br/>")
+        else:
+            bolton_interp += _reshape("• Overall Bolton در محدوده نرمال.<br/>")
+
+        if ant > 78.5:
+            bolton_interp += _reshape("• Anterior Bolton بالاتر از نرمال: اضافه حجم دندان‌های قدامی فک پایین.<br/>")
+        elif ant < 75.5:
+            bolton_interp += _reshape("• Anterior Bolton پایین‌تر از نرمال: اضافه حجم دندان‌های قدامی فک بالا.<br/>")
+        else:
+            bolton_interp += _reshape("• Anterior Bolton در محدوده نرمال.<br/>")
+
+        if bolton_interp:
+            elements.append(Paragraph(
+                _reshape("تفسیر Bolton:"),
+                ParagraphStyle('SubSec3', parent=normal_style, fontSize=11,
+                               textColor=colors.HexColor('#1E40AF'))
+            ))
+            elements.append(Paragraph(bolton_interp, normal_style))
+    else:
+        elements.append(Paragraph(
+            _reshape(
+                "⚠ توجه: نتایج ۳D (نسبت‌های بولتون و Space Analysis) در دسترس نیست. "
+                "لطفاً ابتدا در اپلیکیشن ۳D اسکن‌ها را آپلود کرده و داده‌ها را وارد نمایید."
+            ),
+            ParagraphStyle('Note', parent=normal_style,
+                           textColor=colors.HexColor('#B45309'))
+        ))
+
     elements.append(Spacer(1, 20))
     elements.append(Paragraph(
         f"Generated by Aariz Precision Station — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        ParagraphStyle('Footer', parent=normal_style, fontSize=8, alignment=1, textColor=colors.grey)
+        ParagraphStyle('Footer', parent=normal_style, fontSize=8,
+                       alignment=1, textColor=colors.grey)
     ))
 
     doc.build(elements)
