@@ -16,3 +16,4 @@ stpyvista
 plotly
 pythreejs
 scipy
+fast-simplification
