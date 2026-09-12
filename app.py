@@ -5,7 +5,9 @@ import numpy as np
 import os
 import gc
 import io
+import json
 import urllib.request
+from datetime import datetime
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -65,7 +67,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- ۲. معماری مرجع (بدون تغییر) ---
+# --- ۲. معماری مرجع ---
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch, dropout_prob=0.1):
         super().__init__()
@@ -110,7 +112,7 @@ def load_models():
     if not check_files(): return None
     device = torch.device("cpu")
     loaded_models = []
-    
+
     for f in get_model_map():
         m = CephaUNet(n_landmarks=29).to(device)
         m = torch.quantization.quantize_dynamic(
@@ -124,7 +126,7 @@ def load_models():
         gc.collect()
     return loaded_models
 
-# --- ماژول ساخت PDF افزایشی چندصفحه‌ای با پشتیبانی فونت Vazir ---
+# --- ماژول ساخت PDF ---
 def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -142,12 +144,12 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
     normal_style = ParagraphStyle(
         'DocNormal', parent=styles['Normal'], fontName=VAZIR_FONT_NAME, fontSize=10, leading=14, alignment=2
     )
-    
+
     elements = []
-    
+
     elements.append(Paragraph(reshape_fa("Aariz Precision Station - Comprehensive Cephalometric Report"), title_style))
     elements.append(Spacer(1, 6))
-    
+
     info_data = [
         [Paragraph(reshape_fa(f"<b>جنسیت بیمار:</b> {patient_info.get('gender')}"), normal_style),
          Paragraph(f"<b>Pixel Size:</b> {patient_info.get('pixel_size')} mm/px", normal_style)],
@@ -163,7 +165,7 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
     ]))
     elements.append(info_table)
     elements.append(Spacer(1, 8))
-    
+
     elements.append(Paragraph(reshape_fa("۱. مقایسه با پارامترهای مرجع و استاندارد (Norms)"), section_style))
     table_content = [[
         Paragraph(reshape_fa("وضعیت بالینی"), normal_style),
@@ -180,7 +182,7 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
             Paragraph(f"{item['measured']} {item['unit']}", normal_style),
             Paragraph(item['param'], normal_style)
         ])
-        
+
     angles_table = Table(table_content, colWidths=[130, 90, 100, 90, 130])
     angles_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
@@ -193,7 +195,7 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
     ]))
     elements.append(angles_table)
     elements.append(Spacer(1, 8))
-    
+
     elements.append(Paragraph(reshape_fa("۲. تفسیر تفصیلی و تشخیصی"), section_style))
     interp_text = ""
     for category, desc in detailed_interpretations.items():
@@ -207,13 +209,13 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
         plan_text += f"<b>{idx}. {reshape_fa(item['title'])}:</b> {reshape_fa(item['desc'])}<br/>"
     elements.append(Paragraph(plan_text, normal_style))
     elements.append(Spacer(1, 8))
-    
+
     if annotated_img_bytes:
         elements.append(Paragraph(reshape_fa("۴. تصویر سفلومتری و لندمارک‌های رسم‌شده"), section_style))
         img_buf = io.BytesIO(annotated_img_bytes)
         rl_img = RLImage(img_buf, width=220, height=220)
         elements.append(rl_img)
-        
+
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
@@ -222,7 +224,6 @@ def generate_clinical_pdf(patient_info, norm_table_data, detailed_interpretation
 tab_ceph, tab_3d = st.tabs(["📐 آنالیز سئفالومتری (۲D)", "🦷 آنالیز اسکن داخل دهانی (۳D)"])
 
 with tab_ceph:
-    # --- اجرای منطق اصلی برنامه سئفالومتری ---
     models = load_models()
 
     st.sidebar.title("🛠 مرکز پردازش Aariz")
@@ -234,17 +235,16 @@ with tab_ceph:
     if models is None:
         st.stop()
 
-    # --- ۵. پردازش تصویر ---
     def run_precise_prediction(img_pil, models):
         device = torch.device("cpu")
         ow, oh = img_pil.size; img_gray = img_pil.convert('L'); ratio = 512 / max(ow, oh)
         nw, nh = int(ow * ratio), int(oh * ratio); img_rs = img_gray.resize((nw, nh), Image.LANCZOS)
         canvas = Image.new("L", (512, 512)); px, py = (512 - nw) // 2, (512 - nh) // 2
         canvas.paste(img_rs, (px, py))
-        
+
         np_img = np.array(canvas).astype(np.float32) / 255.0
         input_tensor = torch.from_numpy(np_img).unsqueeze(0).unsqueeze(0).to(device)
-        
+
         with torch.no_grad():
             outs = []
             for m in models:
@@ -252,20 +252,19 @@ with tab_ceph:
                 outs.append(out)
                 del out
                 gc.collect()
-                
+
             ANT_IDX, POST_IDX = [10, 14, 9, 5, 28, 20], [7, 11, 12, 15]
             coords = {}
             for i in range(29):
                 hm = outs[1][i] if i in ANT_IDX else (outs[2][i] if i in POST_IDX else outs[0][i])
                 y, x = np.unravel_index(np.argmax(hm), hm.shape)
                 coords[i] = [int((x - px) / ratio), int((y - py) / ratio)]
-        
+
         del input_tensor
         del outs
         gc.collect()
         return coords
 
-    # --- ۶. نمایش و تنظیم لندمارک‌ها ---
     landmark_names = ['A', 'ANS', 'B', 'Me', 'N', 'Or', 'Pog', 'PNS', 'Pn', 'R', 'S', 'Ar', 'Co', 'Gn', 'Go', 'Po', 'LPM', 'LIT', 'LMT', 'UPM', 'UIA', 'UIT', 'UMT', 'LIA', 'Li', 'Ls', 'N`', 'Pog`', 'Sn']
 
     if "click_version" not in st.session_state: st.session_state.click_version = 0
@@ -280,7 +279,7 @@ with tab_ceph:
 
         raw_img = st.session_state.raw_img; W, H = raw_img.size
         target_idx = st.sidebar.selectbox("🎯 انتخاب لندمارک:", range(29), format_func=lambda x: f"{x}: {landmark_names[x]}")
-        
+
         if st.sidebar.button("🔄 Reset Point"):
             st.session_state.lms[target_idx] = st.session_state.initial_lms[target_idx].copy()
             st.session_state.click_version += 1; st.rerun()
@@ -304,7 +303,7 @@ with tab_ceph:
             disp_w = 700
             ratio_disp = disp_w / W
             disp_h = int(H * ratio_disp)
-            
+
             draw_img = raw_img.resize((disp_w, disp_h), Image.BILINEAR)
             draw = ImageDraw.Draw(draw_img); l = st.session_state.lms
             def sc(p): return (int(p[0] * ratio_disp), int(p[1] * ratio_disp))
@@ -334,7 +333,7 @@ with tab_ceph:
                 if st.session_state.lms[target_idx] != m_c:
                     st.session_state.lms[target_idx] = m_c; st.session_state.click_version += 1; st.rerun()
 
-        # --- ۷. محاسبات کامل زاویه‌ای و طولی ---
+        # --- محاسبات ---
         st.divider()
         def get_ang(p1, p2, p3, p4=None):
             v1, v2 = (np.array(p1)-np.array(p2), np.array(p3)-np.array(p2)) if p4 is None else (np.array(p2)-np.array(p1), np.array(p4)-np.array(p3))
@@ -351,16 +350,15 @@ with tab_ceph:
         co_a = round(np.linalg.norm(np.array(l[12])-np.array(l[0])) * pixel_size, 1)
         co_gn = round(np.linalg.norm(np.array(l[12])-np.array(l[13])) * pixel_size, 1)
         diff_mcnamara = round(co_gn - co_a, 2)
-        
+
         p_occ_p, p_occ_a = (np.array(l[18]) + np.array(l[22])) / 2, (np.array(l[17]) + np.array(l[21])) / 2
         v_occ = (p_occ_a - p_occ_p) / (np.linalg.norm(p_occ_a - p_occ_p) + 1e-6)
         wits_mm = round((np.dot(np.array(l[0]) - p_occ_p, v_occ) - np.dot(np.array(l[2]) - p_occ_p, v_occ)) * pixel_size, 2)
         wits_norm = 0.0 if gender == "آقا (Male)" else -1.0
-        
+
         dist_ls = round(dist_to_line(np.array(l[25]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
         dist_li = round(dist_to_line(np.array(l[24]), np.array(l[8]), np.array(l[27])) * pixel_size, 2)
 
-        # --- ۸. ساخت جدول مقایسه با NORMها و انحرافات ---
         norm_table_data = [
             {"param": "SNA (Maxilla Pos)", "measured": sna, "unit": "°", "norm": 82.0, "dev": round(sna - 82.0, 2), "status": "Protrusive" if sna > 84 else ("Retrusive" if sna < 80 else "Normal")},
             {"param": "SNB (Mandible Pos)", "measured": snb, "unit": "°", "norm": 80.0, "dev": round(snb - 80.0, 2), "status": "Protrusive" if snb > 82 else ("Retrusive" if snb < 78 else "Normal")},
@@ -373,34 +371,29 @@ with tab_ceph:
             {"param": "Lower Lip to E-Line", "measured": dist_li, "unit": "mm", "norm": -2.0, "dev": round(dist_li - (-2.0), 2), "status": "Protrusive" if dist_li > 0 else ("Retrusive" if dist_li < -4 else "Normal")}
         ]
 
-        # --- ۹. تفسیر جامع و تخصصی داده‌ها ---
         detailed_interpretations = {
             "رابطه اسکلتی ساژیتال (Sagittal Relationship)": f"مقدار زاویه ANB برابر با {anb}° و ارزیابی Wits برابر با {wits_mm} mm می‌باشد. " + 
                 ("نشان‌دهنده ناهنجاری اسکلتی کلاس II شدید به دلیل برآمدگی فک بالا یا عقب‌ماندگی فک پایین است." if anb > 4.5 else 
                  ("نشان‌دهنده ناهنجاری اسکلتی کلاس III به دلیل جلو بودن فک پایین یا ضعیف بودن فک بالا است." if anb < 0.5 else 
                   "رابطه فک بالا و پایین در حد فاصل نرمال است و تطابق اسکلتی کلاس I وجود دارد.")),
-
             "الگوی رشد عمودی (Vertical Pattern)": f"زاویه FMA برابر با {fma}° است (Norm: 25.0°). " + 
-                ("الگوی رشد هایپردایورجنت (Vertical Growing / High Angle). بیمار تمایل به اوپن بایت، افزایش ارتفاع تحتانی صورت و عضلات ضعیف‌تر جویدن دارد." if fma > 30 else 
-                 ("الگوی رشد هایپودایورجنت (Horizontal Growing / Low Angle). بیمار دارای ساختار صورت فشرده، تمایل به دیپ بایت و عضلات جویدن قوی است." if fma < 20 else 
+                ("الگوی رشد هایپردایورجنت (Vertical Growing / High Angle)." if fma > 30 else 
+                 ("الگوی رشد هایپودایورجنت (Horizontal Growing / Low Angle)." if fma < 20 else 
                   "الگوی رشد عمودی متوازن و نرمال (Mesofacial/Normodivergent).")),
-
             "تحلیل تناسب طول فکین (McNamara Discrepancy)": f"طول موثر فک بالا (Co-A) برابر {co_a} mm و طول موثر فک پایین (Co-Gn) برابر {co_gn} mm است (اختلاف: {diff_mcnamara} mm). " +
-                ("اختلاف طول فکین بیشتر از حد نرمال بوده که موید رشد بیش از حد فک پایین یا کوتاهی فک بالا می‌باشد." if diff_mcnamara > 28 else
-                 ("اختلاف طول فکین کمتر از حد نرمال بوده که نشان‌دهنده نقص رشد فک پایین است." if diff_mcnamara < 20 else
+                ("اختلاف طول فکین بیشتر از حد نرمال." if diff_mcnamara > 28 else
+                 ("اختلاف طول فکین کمتر از حد نرمال." if diff_mcnamara < 20 else
                   "تناسب طولی فک بالا و پایین در محدوده هارمونیک قرار دارد.")),
-
             "پروفایل بافت نرم (Soft Tissue Profile)": f"فاصله لب بالا تا خط E برابر با {dist_ls} mm و لب پایین {dist_li} mm است. " +
-                ("برجستگی بافت نرم لب‌ها نسبت به خط E مشهود است که می‌تواند ناشی از پروتروژن دندان‌های قدامی (Bimaxillary Protrusion) باشد." if dist_ls > -1 or dist_li > 1 else
+                ("برجستگی بافت نرم لب‌ها نسبت به خط E مشهود است." if dist_ls > -1 or dist_li > 1 else
                  ("پروفایل لب‌ها نسبت به خط E عقب‌رفته (Retrusive) است." if dist_ls < -6 else
                   "پروفایل بافت نرم و وضعیت لب‌ها زیبا و متوازن است."))
         }
 
-        # طرح درمان پیشنهادی
         treatment_plan = []
         if anb > 4:
             if fma > 30:
-                treatment_plan.append({"title": "کنترل رشد عمودی و اصلاح کلاس II", "desc": "استفاده از دستگاه‌های اینترودکننده یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II جهت جلوگیری از چرخش ساعت‌گرد فک پایین."})
+                treatment_plan.append({"title": "کنترل رشد عمودی و اصلاح کلاس II", "desc": "استفاده از دستگاه‌های اینترودکننده یا Tilted Occlusal Plane control همراه با الستیک‌های کلاس II."})
             else:
                 treatment_plan.append({"title": "تحریک رشد/پیش‌آوردن فک پایین", "desc": "دستگاه‌های فانکشنال (مانند Twin Block یا Herbst) در سنین رشد، یا جراحی BSSO در سنین بالاتر."})
         elif anb < 0:
@@ -411,7 +404,7 @@ with tab_ceph:
         if dist_ls > 0 or dist_li > 1:
             treatment_plan.append({"title": "ارزیابی طرح درمان کشیدن دندان (Extraction Evaluation)", "desc": "به دلیل برجستگی لب‌ها نسبت به خط E، بررسی کشیدن پری‌مولرها جهت ریترود کردن دندان‌های قدامی پیشنهاد می‌شود."})
 
-        # --- ۱۰. نمایش در UI Streamlit ---
+        # --- نمایش در UI ---
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Steiner (ANB)", f"{anb}°", f"{round(anb - 2.0, 2)}°")
         m2.metric("Wits", f"{wits_mm} mm", f"{round(wits_mm - wits_norm, 2)} mm")
@@ -420,9 +413,9 @@ with tab_ceph:
 
         st.divider()
         st.header("📊 جدول مقایسه کامل با Normها و آنالیز جامع")
-        
+
         tab1, tab2, tab3 = st.tabs(["📐 جدول مقایسه با Normها", "🔍 تفسیر تخصصی داده‌ها", "💡 طرح درمان پیشنهادی"])
-        
+
         with tab1:
             st.subheader("مقایسه اندازه پارامترها با مقادیر مرجع (Norms)")
             st.dataframe(norm_table_data, use_container_width=True)
@@ -439,22 +432,22 @@ with tab_ceph:
                 st.markdown(f"**{idx}. {item['title']}**")
                 st.write(item['desc'])
 
-        # --- ۱۱. تولید و دکمه دانلود PDF ---
+        # --- تولید و دکمه دانلود PDF ---
         st.markdown("---")
-        
+
         patient_info_pdf = {
             'gender': gender,
             'pixel_size': pixel_size,
             'date': '2026-09-10',
             'diag': "Class II Skeletal" if anb > 4 else ("Class III Skeletal" if anb < 0 else "Class I Skeletal")
         }
-        
+
         img_byte_arr = io.BytesIO()
         draw_img.save(img_byte_arr, format='PNG')
         annotated_img_bytes = img_byte_arr.getvalue()
-        
+
         pdf_bytes = generate_clinical_pdf(patient_info_pdf, norm_table_data, detailed_interpretations, treatment_plan, annotated_img_bytes)
-        
+
         st.download_button(
             label="📄 دانلود گزارش جامع چندصفحه‌ای بالینی و Norms (PDF)",
             data=pdf_bytes,
@@ -463,6 +456,5 @@ with tab_ceph:
             use_container_width=True
         )
 
-        # --- دانلود نتایج به صورت JSON برای ادغام با تحلیل ۳D ---
-        import json
-        from datetime import datetime
+        # --- دانلود JSON برای ادغام با تحلیل ۳D ---
+        ceph_results_json =
