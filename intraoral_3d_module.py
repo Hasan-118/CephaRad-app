@@ -52,40 +52,31 @@ def safe_simplify_mesh(mesh, target_faces=10000):
 
     current_faces = len(mesh.faces)
 
-    # اگر مش کوچک است، نیازی به ساده‌سازی نیست
     if current_faces <= target_faces:
         return mesh
 
-    # روش ۱: تلاش با simplify_quadratic_decimation
     try:
         return mesh.simplify_quadratic_decimation(target_faces)
     except Exception:
         pass
 
-    # روش ۲: استفاده از subdivision (کاهش چگالی)
     try:
-        # نمونه‌برداری تصادفی از رأس‌ها
         ratio = target_faces / current_faces
         if hasattr(mesh, 'simplify_quadric_decimation'):
             return mesh.simplify_quadric_decimation(target_faces)
     except Exception:
         pass
 
-    # روش ۳: حذف faces اضافی با numpy
     try:
         if current_faces > target_faces:
-            # انتخاب تصادفی faces
             np.random.seed(42)
             keep_indices = np.random.choice(current_faces, target_faces, replace=False)
             keep_indices = np.sort(keep_indices)
 
-            # ساخت mesh جدید با faces انتخاب‌شده
             new_faces = mesh.faces[keep_indices]
-            # حذف رأس‌های بدون استفاده
             used_vertices = np.unique(new_faces)
             new_vertices = mesh.vertices[used_vertices]
 
-            # نقشه‌برداری از ایندکس قدیم به جدید
             index_map = np.zeros(len(mesh.vertices), dtype=np.int64)
             index_map[used_vertices] = np.arange(len(used_vertices))
             new_faces = index_map[new_faces]
@@ -94,7 +85,6 @@ def safe_simplify_mesh(mesh, target_faces=10000):
     except Exception:
         pass
 
-    # اگر همه روش‌ها شکست خورد، مش اصلی را برگردان
     return mesh
 
 
@@ -158,7 +148,6 @@ def render_segmented_mesh(mesh_simple, teeth_mask_simple, title="Segmented"):
     faces = mesh_simple.faces
 
     if len(teeth_mask_simple) != len(vertices):
-        # اگر اندازه‌ها نمی‌خوانند، همه را دندان در نظر بگیر
         teeth_mask_simple = np.ones(len(vertices), dtype=bool)
 
     face_teeth_count = teeth_mask_simple[faces].sum(axis=1)
@@ -215,30 +204,55 @@ def render_intraoral_3d_tab():
         stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
                                          type=['stl', 'obj'], key="man_stl")
 
-    # --- ذخیره مش در session_state (برای جلوگیری از بازخوانی) ---
-    if 'mesh_max_cache' not in st.session_state:
-        st.session_state.mesh_max_cache = None
-        st.session_state.mesh_max_name = None
-    if 'mesh_man_cache' not in st.session_state:
-        st.session_state.mesh_man_cache = None
-        st.session_state.mesh_man_name = None
+    # === بارگذاری مستقیم (بدون کش) ===
+    mesh_max_orig = None
+    mesh_man_orig = None
 
-    # بارگذاری فک بالا (فقط اگر فایل جدید است)
     if stl_maxilla is not None:
-        if st.session_state.mesh_max_name != stl_maxilla.name:
-            with st.spinner(f"در حال بارگذاری {stl_maxilla.name}..."):
-                st.session_state.mesh_max_cache = parse_mesh(stl_maxilla)
-                st.session_state.mesh_max_name = stl_maxilla.name
+        try:
+            file_bytes = stl_maxilla.read()
+            if len(file_bytes) > 0:
+                mesh_max_orig = trimesh.load(
+                    io.BytesIO(file_bytes),
+                    file_type='stl',
+                    force='mesh'
+                )
+                if isinstance(mesh_max_orig, trimesh.Scene):
+                    mesh_max_orig = mesh_max_orig.dump(concatenate=True)
 
-    # بارگذاری فک پایین (فقط اگر فایل جدید است)
+                max_dim = np.max(mesh_max_orig.extents)
+                if max_dim < 10.0:
+                    mesh_max_orig.apply_scale(10.0)
+                elif max_dim > 300.0:
+                    mesh_max_orig.apply_scale(0.1)
+
+                st.success(f"✅ فک بالا بارگذاری شد: {len(mesh_max_orig.vertices)} رأس")
+        except Exception as e:
+            st.error(f"❌ خطا در فک بالا: {type(e).__name__}: {e}")
+            mesh_max_orig = None
+
     if stl_mandible is not None:
-        if st.session_state.mesh_man_name != stl_mandible.name:
-            with st.spinner(f"در حال بارگذاری {stl_mandible.name}..."):
-                st.session_state.mesh_man_cache = parse_mesh(stl_mandible)
-                st.session_state.mesh_man_name = stl_mandible.name
+        try:
+            file_bytes = stl_mandible.read()
+            if len(file_bytes) > 0:
+                mesh_man_orig = trimesh.load(
+                    io.BytesIO(file_bytes),
+                    file_type='stl',
+                    force='mesh'
+                )
+                if isinstance(mesh_man_orig, trimesh.Scene):
+                    mesh_man_orig = mesh_man_orig.dump(concatenate=True)
 
-    mesh_max_orig = st.session_state.mesh_max_cache
-    mesh_man_orig = st.session_state.mesh_man_cache
+                max_dim = np.max(mesh_man_orig.extents)
+                if max_dim < 10.0:
+                    mesh_man_orig.apply_scale(10.0)
+                elif max_dim > 300.0:
+                    mesh_man_orig.apply_scale(0.1)
+
+                st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man_orig.vertices)} رأس")
+        except Exception as e:
+            st.error(f"❌ خطا در فک پایین: {type(e).__name__}: {e}")
+            mesh_man_orig = None
 
     # --- تنظیمات سایدبار ---
     st.sidebar.markdown("### ⚙️ تنظیمات سگمنتیشن")
@@ -268,10 +282,8 @@ def render_intraoral_3d_tab():
                         teeth_percent_max = (teeth_mask_max.sum() / len(teeth_mask_max)) * 100
                         st.caption(f"🦷 دندان‌های تشخیص داده‌شده: {teeth_percent_max:.1f}%")
 
-                    # ساده‌سازی مش
                     mesh_max_simple = safe_simplify_mesh(mesh_max_orig, target_faces=8000)
 
-                    # نگاشت ماسک به مش ساده‌شده
                     if len(mesh_max_simple.vertices) == len(mesh_max_orig.vertices):
                         mask_max_simple = teeth_mask_max
                     else:
