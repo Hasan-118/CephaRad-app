@@ -99,8 +99,16 @@ if ceph_results:
         try:
             from ceph_reporter import generate_unified_report
 
+            # --- دریافت نتایج ۳D از session_state ---
+            bolton_3d = st.session_state.get('bolton_3d', None)
+
+            if bolton_3d:
+                st.info("✅ نتایج ۳D (Bolton و Space) در گزارش درج خواهد شد.")
+            else:
+                st.warning("⚠️ نتایج ۳D در دسترس نیست — ابتدا STL آپلود کنید و داده‌ها را وارد نمایید.")
+
             with st.spinner("در حال تولید گزارش..."):
-                pdf_bytes = generate_unified_report(ceph_results)
+                pdf_bytes = generate_unified_report(ceph_results, bolton_3d)
 
             st.download_button(
                 label="📥 دانلود گزارش یکپارچه (PDF)",
