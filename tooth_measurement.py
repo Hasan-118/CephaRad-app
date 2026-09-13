@@ -1,7 +1,7 @@
 """
 ماژول اندازه‌گیری نقطه‌به‌نقطه دندان‌ها روی نمای اکلوزال
 Aariz Precision Station - Tooth Measurement Module
-نسخه: 1.0 - با ترتیب هوشمند علامت‌گذاری
+نسخه: 1.1 - با پشتیبانی از session_state و مش‌های پاس داده شده
 """
 
 import streamlit as st
@@ -13,18 +13,12 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 
 # ============================================================
-# لیست دندان‌ها (FDI Notation) با ترتیب هوشمند
+# لیست دندان‌ها (FDI Notation)
 # ============================================================
 
 def get_arch_teeth(is_maxilla=True):
-    """
-    لیست دندان‌ها از آخرین دندان سمت راست تا آخرین دندان سمت چپ
-    هر دندان با موقعیتش نسبت به خط وسط مشخص می‌شود:
-    - side: "right" یا "left"
-    - order_from_center: فاصله از خط وسط (1 = نزدیک‌ترین، 6 = دورترین)
-    """
+    """لیست دندان‌ها از آخرین دندان سمت راست تا آخرین دندان سمت چپ"""
     if is_maxilla:
-        # فک بالا - FDI: 16 تا 26
         return [
             {"id": 16, "name": "6 راست", "type": "molar", "side": "right", "order": 6},
             {"id": 15, "name": "5 راست", "type": "premolar", "side": "right", "order": 5},
@@ -40,7 +34,6 @@ def get_arch_teeth(is_maxilla=True):
             {"id": 26, "name": "6 چپ", "type": "molar", "side": "left", "order": 6},
         ]
     else:
-        # فک پایین - FDI: 46 تا 36
         return [
             {"id": 46, "name": "6 راست", "type": "molar", "side": "right", "order": 6},
             {"id": 45, "name": "5 راست", "type": "premolar", "side": "right", "order": 5},
@@ -58,38 +51,23 @@ def get_arch_teeth(is_maxilla=True):
 
 
 def get_expected_point_type(tooth, is_maxilla=True):
-    """
-    ترتیب هوشمند علامت‌گذاری:
-    - دندان‌های سمت راست: ابتدا دیستال، سپس مزیال
-    - دندان‌های سمت چپ: ابتدا مزیال، سپس دیستال
-    
-    این ترتیب باعث می‌شود کاربر یک مسیر پیوسته 
-    از آخرین دندان یک سمت تا آخرین دندان سمت مقابل را دنبال کند.
-    """
+    """نقطه شروع برای دندان (بر اساس سمت)"""
     if tooth["side"] == "right":
-        return "distal"  # شروع از دورترین نقطه (سمت راست)
+        return "distal"
     else:
-        return "mesial"  # شروع از نزدیک‌ترین نقطه (سمت چپ)
+        return "mesial"
 
 
 def get_next_point_type(current_type, tooth):
-    """
-    تعیین نقطه بعدی برای همان دندان:
-    - اگر الان دیستال هستیم → برو مزیال
-    - اگر الان مزیال هستیم → این دندان تمام است، برو دندان بعدی
-    """
+    """نقطه بعدی برای همان دندان"""
     if tooth["side"] == "right":
-        # سمت راست: دیستال → مزیال
         if current_type == "distal":
             return "mesial"
-        else:
-            return None  # تمام شد
+        return None
     else:
-        # سمت چپ: مزیال → دیستال
         if current_type == "mesial":
             return "distal"
-        else:
-            return None  # تمام شد
+        return None
 
 
 # ============================================================
@@ -97,10 +75,7 @@ def get_next_point_type(current_type, tooth):
 # ============================================================
 
 def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
-    """
-    رندر نمای اکلوزال (از بالا) از مش STL
-    نقاط با رنگ گچی روشن نمایش داده می‌شوند
-    """
+    """رندر نمای اکلوزال (از بالا) از مش STL"""
     if mesh is None:
         return None, None
 
@@ -145,9 +120,6 @@ def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
             intensity = max(140, min(230, intensity))
             draw.point((px, py), fill=(intensity, intensity - 5, intensity - 10))
 
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-
     transform_info = {
         "x_min": x_min,
         "y_min": y_min,
@@ -159,19 +131,12 @@ def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
     return img, transform_info
 
 
-def pixel_to_3d(px, py, transform_info, z_value=0):
-    """تبدیل مختصات پیکسل به مختصات سه‌بعدی مش"""
-    x = (px - transform_info["padding"]) / transform_info["scale"] + transform_info["x_min"]
-    y = (transform_info["img_size"] - py - transform_info["padding"]) / transform_info["scale"] + transform_info["y_min"]
-    return (x, y, z_value)
-
-
 # ============================================================
-# مدیریت وضعیت اندازه‌گیری
+# مدیریت وضعیت
 # ============================================================
 
 def init_measurement_state(is_maxilla):
-    """مقداردهی اولیه وضعیت اندازه‌گیری"""
+    """مقداردهی اولیه وضعیت"""
     key = "max" if is_maxilla else "man"
 
     if f"missing_teeth_{key}" not in st.session_state:
@@ -183,14 +148,11 @@ def init_measurement_state(is_maxilla):
     if f"current_tooth_idx_{key}" not in st.session_state:
         st.session_state[f"current_tooth_idx_{key}"] = 0
 
-    if f"current_point_type_{key}" not in st.session_state:
-        st.session_state[f"current_point_type_{key}"] = "distal"
-
 
 def draw_points_on_image(img, points_dict, teeth_list, missing_set,
                           current_tooth_id=None, current_point_type=None,
                           is_maxilla=True):
-    """رسم نقاط علامت‌گذاری‌شده روی تصویر"""
+    """رسم نقاط روی تصویر"""
     img_copy = img.copy()
     draw = ImageDraw.Draw(img_copy)
 
@@ -198,14 +160,12 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
     COLOR_DISTAL = (37, 99, 235)
     COLOR_LINE = (16, 185, 129)
 
-    # رسم خطوط
     for tooth_id, pts in points_dict.items():
         if "mesial" in pts and "distal" in pts:
             mx, my = pts["mesial"]
             dx, dy = pts["distal"]
             draw.line([(mx, my), (dx, dy)], fill=COLOR_LINE, width=2)
 
-    # رسم نقاط
     for tooth_id, pts in points_dict.items():
         if "mesial" in pts:
             mx, my = pts["mesial"]
@@ -227,7 +187,7 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
     draw.rectangle([10, 10, 340, 100], fill=(255, 255, 255), outline=(200, 200, 200))
     draw.text((20, 20), f"🦷 {'فک بالا' if is_maxilla else 'فک پایین'}", fill=(0, 0, 0))
     draw.text((20, 45), "🔴 مزیال (M)  🔵 دیستال (D)", fill=(60, 60, 60))
-    draw.text((20, 70), "مسیر: از راست به چپ (دیستال اول)", fill=(60, 60, 60))
+    draw.text((20, 70), "مسیر: از راست به چپ", fill=(60, 60, 60))
 
     return img_copy
 
@@ -237,7 +197,7 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
 # ============================================================
 
 def compute_tooth_widths(points_dict, teeth_list, missing_set, pixel_size_mm=0.1):
-    """محاسبه عرض هر دندان و فضای بین دندانی"""
+    """محاسبه عرض و فضای بین دندانی"""
     results = []
     previous_distal = None
 
@@ -304,7 +264,7 @@ def compute_tooth_widths(points_dict, teeth_list, missing_set, pixel_size_mm=0.1
 
 
 def compute_bolton_summary(widths_max, widths_man):
-    """محاسبه نسبت‌های بولتون از جدول‌های عرض دندان‌ها"""
+    """محاسبه نسبت‌های بولتون"""
     max_valid = [t for t in widths_max if t["width_mm"] is not None]
     man_valid = [t for t in widths_man if t["width_mm"] is not None]
 
@@ -338,15 +298,21 @@ def compute_bolton_summary(widths_max, widths_man):
 # رابط کاربری اصلی
 # ============================================================
 
-def render_tooth_measurement_tab(mesh_max, mesh_man, pixel_size_default=0.1):
-    """رابط کاربری کامل اندازه‌گیری نقطه‌به‌نقطه با ترتیب هوشمند"""
+def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_default=0.1):
+    """رابط کاربری کامل اندازه‌گیری نقطه‌به‌نقطه"""
+    
+    # اگر مش‌ها پاس نشدند، از session_state بخوان
+    if mesh_max is None:
+        mesh_max = st.session_state.get("uploaded_mesh_max", None)
+    if mesh_man is None:
+        mesh_man = st.session_state.get("uploaded_mesh_man", None)
+    
     st.header("📏 اندازه‌گیری نقطه‌به‌نقطه عرض دندان‌ها")
     st.info("""
     **راهنمای ترتیب علامت‌گذاری:**
     - از **آخرین دندان سمت راست** شروع کنید
     - برای هر دندان سمت راست: ابتدا **دیستال** (🔵) سپس **مزیال** (🔴)
     - برای هر دندان سمت چپ: ابتدا **مزیال** (🔴) سپس **دیستال** (🔵)
-    - این ترتیب یک مسیر پیوسته از راست به چپ ایجاد می‌کند
     """)
 
     arch = st.radio(
@@ -365,7 +331,6 @@ def render_tooth_measurement_tab(mesh_max, mesh_man, pixel_size_default=0.1):
     init_measurement_state(is_maxilla)
     key = "max" if is_maxilla else "man"
 
-    # Pixel Size
     col_px1, col_px2 = st.columns([1, 3])
     with col_px1:
         pixel_size_mm = st.number_input(
@@ -376,7 +341,6 @@ def render_tooth_measurement_tab(mesh_max, mesh_man, pixel_size_default=0.1):
             key=f"px_size_{key}"
         )
 
-    # رندر نمای اکلوزال
     with st.spinner("در حال رندر نمای اکلوزال..."):
         occ_img, transform_info = render_occlusal_view(mesh, img_size=900)
 
@@ -404,161 +368,3 @@ def render_tooth_measurement_tab(mesh_max, mesh_man, pixel_size_default=0.1):
                     st.rerun()
                 elif not checkbox and tooth["id"] in missing_teeth:
                     missing_teeth.discard(tooth["id"])
-                    st.rerun()
-
-        st.info(f"📊 غایب: **{len(missing_teeth)}** | موجود: **{len(teeth) - len(missing_teeth)}**")
-
-    # دندان‌های موجود
-    available_teeth = [t for t in teeth if t["id"] not in missing_teeth]
-    if not available_teeth:
-        st.warning("⚠️ همه دندان‌ها غایب هستند.")
-        return None
-
-    # تعیین دندان فعلی
-    current_idx = min(st.session_state[f"current_tooth_idx_{key}"], len(available_teeth) - 1)
-    current_tooth = available_teeth[current_idx]
-
-    # تعیین نقطه فعلی بر اساس ترتیب هوشمند
-    if current_tooth["id"] not in st.session_state[f"tooth_points_{key}"]:
-        # دندان جدید → نقطه شروع بر اساس سمت
-        expected_type = get_expected_point_type(current_tooth, is_maxilla)
-    else:
-        # دندان نیمه‌کاره
-        pts = st.session_state[f"tooth_points_{key}"][current_tooth["id"]]
-        if "distal" not in pts:
-            expected_type = "distal"
-        elif "mesial" not in pts:
-            expected_type = "mesial"
-        else:
-            # هر دو ثبت شده → دندان بعدی
-            if current_idx < len(available_teeth) - 1:
-                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-                st.rerun()
-            expected_type = "distal"
-
-    # اگر کاربر دستی تغییر داده
-    if f"override_point_type_{key}" in st.session_state:
-        expected_type = st.session_state[f"override_point_type_{key}"]
-        del st.session_state[f"override_point_type_{key}"]
-
-    current_type = expected_type
-
-    # نمایش وضعیت
-    st.markdown("### 🎯 علامت‌گذاری")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("دندان فعلی", f"{current_tooth['name']}")
-    with col2:
-        side_label = "🟢 سمت راست" if current_tooth["side"] == "right" else "🔵 سمت چپ"
-        st.metric("سمت", side_label)
-    with col3:
-        type_label = "🔵 دیستال" if current_type == "distal" else "🔴 مزیال"
-        st.metric("نقطه فعلی", type_label)
-    with col4:
-        done = len([t for t in available_teeth if t["id"] in st.session_state[f"tooth_points_{key}"]
-                    and "mesial" in st.session_state[f"tooth_points_{key}"][t["id"]]
-                    and "distal" in st.session_state[f"tooth_points_{key}"][t["id"]]])
-        st.metric("پیشرفت", f"{done} / {len(available_teeth)}")
-
-    # دکمه‌های ناوبری
-    col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns(5)
-    with col_nav1:
-        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}"):
-            if current_idx > 0:
-                st.session_state[f"current_tooth_idx_{key}"] = current_idx - 1
-                if f"override_point_type_{key}" in st.session_state:
-                    del st.session_state[f"override_point_type_{key}"]
-                st.rerun()
-    with col_nav2:
-        if st.button("🔄 پاک کردن", use_container_width=True, key=f"clear_{key}"):
-            tid = current_tooth["id"]
-            if tid in st.session_state[f"tooth_points_{key}"]:
-                del st.session_state[f"tooth_points_{key}"][tid]
-            st.rerun()
-    with col_nav3:
-        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}"):
-            st.session_state[f"override_point_type_{key}"] = "distal"
-            st.rerun()
-    with col_nav4:
-        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}"):
-            st.session_state[f"override_point_type_{key}"] = "mesial"
-            st.rerun()
-    with col_nav5:
-        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}"):
-            if current_idx < len(available_teeth) - 1:
-                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-                if f"override_point_type_{key}" in st.session_state:
-                    del st.session_state[f"override_point_type_{key}"]
-                st.rerun()
-
-    # رسم و نمایش
-    tooth_points = st.session_state[f"tooth_points_{key}"]
-    img_with_points = draw_points_on_image(
-        occ_img, tooth_points, teeth, missing_teeth,
-        current_tooth_id=current_tooth["id"],
-        current_point_type=current_type,
-        is_maxilla=is_maxilla
-    )
-
-    st.markdown(f"**👆 کلیک کنید تا نقطه {current_type} دندان {current_tooth['name']} ثبت شود:**")
-
-    clicked = streamlit_image_coordinates(
-        img_with_points,
-        key=f"occlusal_click_{key}_{current_tooth['id']}_{current_type}"
-    )
-
-    if clicked:
-        cx, cy = clicked["x"], clicked["y"]
-        tid = current_tooth["id"]
-
-        if tid not in tooth_points:
-            tooth_points[tid] = {}
-
-        tooth_points[tid][current_type] = (cx, cy)
-
-        # تعیین نقطه بعدی
-        next_type = get_next_point_type(current_type, current_tooth)
-
-        if next_type is not None:
-            # همان دندان، نقطه بعدی
-            st.session_state[f"override_point_type_{key}"] = next_type
-        else:
-            # دندان بعدی
-            if current_idx < len(available_teeth) - 1:
-                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-            if f"override_point_type_{key}" in st.session_state:
-                del st.session_state[f"override_point_type_{key}"]
-
-        st.rerun()
-
-    # نتایج
-    st.divider()
-    st.markdown("### 📊 نتایج اندازه‌گیری")
-
-    if len(tooth_points) == 0:
-        st.info("ℹ️ هنوز هیچ دندانی علامت‌گذاری نشده است.")
-        return None
-
-    widths = compute_tooth_widths(tooth_points, teeth, missing_teeth, pixel_size_mm)
-
-    table_data = []
-    for w in widths:
-        width_str = f"{w['width_mm']} mm" if w["width_mm"] else "—"
-        space_str = f"{w['space_before_mm']} mm" if w["space_before_mm"] is not None else "—"
-        table_data.append({
-            "دندان": f"{w['tooth_name']} ({w['tooth_id']})",
-            "نوع": w["type"],
-            "عرض (mm)": width_str,
-            "فاصله با قبلی (mm)": space_str,
-            "وضعیت": w["status"]
-        })
-
-    df = pd.DataFrame(table_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    total_width = sum(w["width_mm"] for w in widths if w["width_mm"] is not None)
-    st.metric("مجموع عرض دندان‌های علامت‌گذاری‌شده", f"{round(total_width, 2)} mm")
-
-    st.session_state[f"measured_widths_{key}"] = widths
-
-    return widths
