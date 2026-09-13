@@ -1,16 +1,14 @@
 """
 Aariz 3D Analysis Station
 اپلیکیشن تحلیل سه‌بعدی اسکن داخل دهانی + ادغام با سفالومتری
-نسخه: 2.2 - نمایش مستقیم نمای سه‌بعدی + اندازه‌گیری نقطه‌به‌نقطه
+نسخه: 2.3 - با کش پایدار در حافظه سرور (st.cache_resource)
 """
 
 import streamlit as st
 import json
 import os
-import pickle
 import hashlib
 from datetime import datetime
-from pathlib import Path
 
 # --- تنظیمات صفحه ---
 st.set_page_config(
@@ -53,40 +51,35 @@ st.markdown("""
 
 
 # ============================================================
-# توابع ذخیره‌سازی مش در فایل
+# کش مش‌ها با st.cache_resource (پایدارتر از /tmp)
 # ============================================================
 
-CACHE_DIR = Path("/tmp/aariz_mesh_cache")
-try:
-    CACHE_DIR.mkdir(exist_ok=True)
-except Exception:
-    pass
+@st.cache_resource(show_spinner=False)
+def get_mesh_cache():
+    """یک دیکشنری مشترک که بین sessionها باقی می‌ماند"""
+    return {}
 
 
-def save_mesh_to_cache(mesh, mesh_key):
-    """ذخیره مش در فایل موقت روی سرور"""
+def save_mesh_to_cache_resource(mesh, cache_key):
+    """ذخیره مش در cache_resource (حافظه سرور)"""
     if mesh is None:
-        return None
+        return False
     try:
-        cache_path = CACHE_DIR / f"{mesh_key}.pkl"
-        with open(cache_path, 'wb') as f:
-            pickle.dump(mesh, f)
-        return str(cache_path)
+        cache = get_mesh_cache()
+        cache[cache_key] = mesh
+        return True
     except Exception as e:
-        st.warning(f"⚠️ خطا در ذخیره مش: {e}")
-        return None
+        st.warning(f"⚠️ خطا در ذخیره مش در cache: {e}")
+        return False
 
 
-def load_mesh_from_cache(mesh_key):
-    """بارگذاری مش از فایل موقت"""
+def load_mesh_from_cache_resource(cache_key):
+    """بارگذاری مش از cache_resource (حافظه سرور)"""
     try:
-        cache_path = CACHE_DIR / f"{mesh_key}.pkl"
-        if cache_path.exists():
-            with open(cache_path, 'rb') as f:
-                return pickle.load(f)
+        cache = get_mesh_cache()
+        return cache.get(cache_key, None)
     except Exception:
-        pass
-    return None
+        return None
 
 
 def get_file_hash(uploaded_file):
@@ -120,7 +113,7 @@ st.sidebar.markdown("""
 uploaded_json = st.sidebar.file_uploader(
     "آپلود نتایج سفالومتری (JSON):",
     type=['json'],
-    key="ceph_json_upload_v3"
+    key="ceph_json_upload_v4"
 )
 
 ceph_results = None
@@ -130,8 +123,7 @@ if uploaded_json is not None:
         ceph_results = json.load(uploaded_json)
 
         if 'version' not in ceph_results or 'measurements' not in ceph_results:
-            st.sidebar.error("❌ فایل JSON نامعتبر است. (باید ساختار جدید داشته باشد)")
-            st.sidebar.info("💡 لطفاً از اپ سفالومتری، فایل JSON **جدید** دانلود کنید.")
+            st.sidebar.error("❌ فایل JSON نامعتبر است.")
             ceph_results = None
         else:
             st.sidebar.success("✅ نتایج سفالومتری بارگذاری شد")
@@ -162,19 +154,19 @@ else:
 st.divider()
 
 # ============================================================
-# بخش ۱: آپلود STL
+# بخش ۱: آپلود STL + ذخیره در cache سرور
 # ============================================================
 st.subheader("📤 آپلود اسکن‌های سه‌بعدی")
 
 col_up1, col_up2 = st.columns(2)
 with col_up1:
     stl_maxilla = st.file_uploader("آپلود اسکن فک بالا (Maxilla STL/OBJ):",
-                                    type=['stl', 'obj'], key="max_stl_app3d_v2")
+                                    type=['stl', 'obj'], key="max_stl_app3d_v3")
 with col_up2:
     stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
-                                     type=['stl', 'obj'], key="man_stl_app3d_v2")
+                                     type=['stl', 'obj'], key="man_stl_app3d_v3")
 
-# --- ذخیره‌سازی کلیدهای cache ---
+# --- ذخیره‌سازی کلیدهای cache در session_state ---
 if 'mesh_cache_key_max' not in st.session_state:
     st.session_state.mesh_cache_key_max = None
 if 'mesh_cache_key_man' not in st.session_state:
@@ -187,22 +179,28 @@ if stl_maxilla is not None:
 
     mesh_max_loaded = None
 
+    # مرحله ۱: تلاش از session_state
     if st.session_state.mesh_cache_key_max == cache_key_max:
         mesh_max_loaded = st.session_state.get("uploaded_mesh_max", None)
 
+    # مرحله ۲: تلاش از cache سرور (پایدارتر)
     if mesh_max_loaded is None:
-        mesh_max_loaded = load_mesh_from_cache(cache_key_max)
+        mesh_max_loaded = load_mesh_from_cache_resource(cache_key_max)
         if mesh_max_loaded is not None:
             st.session_state["uploaded_mesh_max"] = mesh_max_loaded
             st.session_state.mesh_cache_key_max = cache_key_max
+            st.info("📥 فک بالا از cache سرور بازیابی شد")
 
+    # مرحله ۳: بارگذاری جدید
     if mesh_max_loaded is None:
         try:
-            mesh_max_loaded = parse_mesh(stl_maxilla)
-            if mesh_max_loaded is not None:
-                st.session_state["uploaded_mesh_max"] = mesh_max_loaded
-                st.session_state.mesh_cache_key_max = cache_key_max
-                save_mesh_to_cache(mesh_max_loaded, cache_key_max)
+            with st.spinner("در حال بارگذاری فک بالا..."):
+                mesh_max_loaded = parse_mesh(stl_maxilla)
+                if mesh_max_loaded is not None:
+                    st.session_state["uploaded_mesh_max"] = mesh_max_loaded
+                    st.session_state.mesh_cache_key_max = cache_key_max
+                    save_mesh_to_cache_resource(mesh_max_loaded, cache_key_max)
+                    st.info("📤 فک بالا در cache سرور ذخیره شد")
         except Exception as e:
             st.error(f"❌ خطا در بارگذاری فک بالا: {e}")
 
@@ -216,22 +214,28 @@ if stl_mandible is not None:
 
     mesh_man_loaded = None
 
+    # مرحله ۱: تلاش از session_state
     if st.session_state.mesh_cache_key_man == cache_key_man:
         mesh_man_loaded = st.session_state.get("uploaded_mesh_man", None)
 
+    # مرحله ۲: تلاش از cache سرور
     if mesh_man_loaded is None:
-        mesh_man_loaded = load_mesh_from_cache(cache_key_man)
+        mesh_man_loaded = load_mesh_from_cache_resource(cache_key_man)
         if mesh_man_loaded is not None:
             st.session_state["uploaded_mesh_man"] = mesh_man_loaded
             st.session_state.mesh_cache_key_man = cache_key_man
+            st.info("📥 فک پایین از cache سرور بازیابی شد")
 
+    # مرحله ۳: بارگذاری جدید
     if mesh_man_loaded is None:
         try:
-            mesh_man_loaded = parse_mesh(stl_mandible)
-            if mesh_man_loaded is not None:
-                st.session_state["uploaded_mesh_man"] = mesh_man_loaded
-                st.session_state.mesh_cache_key_man = cache_key_man
-                save_mesh_to_cache(mesh_man_loaded, cache_key_man)
+            with st.spinner("در حال بارگذاری فک پایین..."):
+                mesh_man_loaded = parse_mesh(stl_mandible)
+                if mesh_man_loaded is not None:
+                    st.session_state["uploaded_mesh_man"] = mesh_man_loaded
+                    st.session_state.mesh_cache_key_man = cache_key_man
+                    save_mesh_to_cache_resource(mesh_man_loaded, cache_key_man)
+                    st.info("📤 فک پایین در cache سرور ذخیره شد")
         except Exception as e:
             st.error(f"❌ خطا در بارگذاری فک پایین: {e}")
 
@@ -255,7 +259,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_max_current, target_faces=20000)
                 fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
-                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d")
+                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v2")
             except Exception as e:
                 st.error(f"خطا در نمایش فک بالا: {e}")
 
@@ -265,7 +269,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_man_current, target_faces=20000)
                 fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
-                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d")
+                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v2")
             except Exception as e:
                 st.error(f"خطا در نمایش فک پایین: {e}")
 else:
@@ -326,7 +330,7 @@ if ceph_results:
     st.header("📄 گزارش نهایی یکپارچه")
     st.markdown("**گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D) و اسکن داخل دهانی (۳D).")
 
-    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v3"):
+    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v4"):
         try:
             from ceph_reporter import generate_unified_report
 
@@ -345,7 +349,7 @@ if ceph_results:
                 file_name=f"Aariz_Unified_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
-                key="download_unified_pdf_v3"
+                key="download_unified_pdf_v4"
             )
             st.success("✅ گزارش آماده دانلود است.")
         except ImportError:
