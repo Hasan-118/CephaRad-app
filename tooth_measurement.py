@@ -87,111 +87,91 @@ def get_next_point_type(current_type, tooth):
 
 def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
     """
-    رندر نمای اکلوزال (از بالا) با PyVista - کیفیت حرفه‌ای
-    اگر PyVista خطا بدهد، از روش پشتیبان استفاده می‌شود.
+    رندر نمای اکلوزال (از بالا) با Plotly + تبدیل به تصویر
+    این روش در Streamlit Cloud بدون مشکل کار می‌کند.
     """
     if mesh is None:
         return None, None
 
     try:
-        import pyvista as pv
+        import plotly.graph_objects as go
+        import numpy as np
 
-        # تبدیل trimesh به pyvista
-        vertices = np.array(mesh.vertices)
-        faces = np.array(mesh.faces)
+        vertices = mesh.vertices
+        faces = mesh.faces
 
-        # PyVista نیاز به فرمت خاص دارد: [3, i0, i1, i2, 3, i3, i4, i5, ...]
-        faces_pv = np.hstack([
-            np.full((len(faces), 1), 3),
-            faces
-        ]).flatten()
-
-        pv_mesh = pv.PolyData(vertices, faces_pv)
-
-        # محاسبه نرمال‌ها برای نورپردازی صاف
-        pv_mesh.compute_normals(
-            cell_normals=False,
-            point_normals=True,
-            inplace=True,
-            auto_orient_normals=True
-        )
-
-        # ایجاد پلاتر off-screen
-        plotter = pv.Plotter(
-            window_size=[img_size, img_size],
-            off_screen=True,
-            border=False
-        )
-
-        # رنگ کرم روشن (شبیه گچ دندانی)
-        plotter.add_mesh(
-            pv_mesh,
-            color='#F5EFE0',
-            smooth_shading=True,
-            specular=0.4,
-            diffuse=0.85,
-            ambient=0.4,
-            show_edges=False,
-            lighting=True
-        )
-
-        # پس‌زمینه سفید
-        plotter.background_color = 'white'
+        # ساخت Figure با Plotly
+        fig = go.Figure(data=[
+            go.Mesh3d(
+                x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
+                i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                color='#F5EFE0',
+                opacity=1.0,
+                flatshading=False,
+                lighting=dict(
+                    ambient=0.6,
+                    diffuse=0.9,
+                    specular=0.3,
+                    roughness=0.4,
+                    fresnel=0.1
+                ),
+                lightposition=dict(x=0, y=0, z=1000)
+            )
+        ])
 
         # نمای از بالا (Occlusal)
-        plotter.camera_position = 'xy'
-        plotter.camera.elevation = 90
-        plotter.camera.azimuth = 0
-        plotter.camera.zoom(1.2)
-
-        # نورپردازی سه‌گانه
-        plotter.remove_all_lights()
-        plotter.add_light(pv.Light(position=(1, 1, 1), intensity=0.5))
-        plotter.add_light(pv.Light(position=(-1, -1, 1), intensity=0.3))
-        plotter.add_light(pv.Light(position=(0, 0, 2), intensity=0.4))
-
-        # رندر و گرفتن تصویر
-        plotter.render()
-        img_array = plotter.screenshot(return_img=True)
-        plotter.close()
-
-        # تبدیل numpy array به PIL Image
-        img = Image.fromarray(img_array)
-
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-
-        # محاسبه transform_info
-        x_min, y_min, z_min = vertices.min(axis=0)
-        x_max, y_max, z_max = vertices.max(axis=0)
-
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-
-        pad_ratio = 0.06
-        x_min -= x_range * pad_ratio
-        x_max += x_range * pad_ratio
-        y_min -= y_range * pad_ratio
-        y_max += y_range * pad_ratio
-
-        scale = min(
-            (img_size - 40) / (x_max - x_min),
-            (img_size - 40) / (y_max - y_min)
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(visible=False, showbackground=False),
+                yaxis=dict(visible=False, showbackground=False),
+                zaxis=dict(visible=False, showbackground=False),
+                aspectmode='data',
+                bgcolor='white',
+                camera=dict(
+                    eye=dict(x=0, y=0, z=2.5),
+                    up=dict(x=0, y=1, z=0)
+                )
+            ),
+            margin=dict(r=0, l=0, b=0, t=0),
+            paper_bgcolor='white',
+            showlegend=False
         )
 
-        transform_info = {
-            "x_min": x_min,
-            "y_min": y_min,
-            "scale": scale,
-            "img_size": img_size,
-            "padding": 20,
-        }
+        # تبدیل به تصویر با kaleido
+        try:
+            img_bytes = fig.to_image(format="png", width=img_size, height=img_size, scale=1)
+            from PIL import Image
+            import io
+            img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
 
-        return img, transform_info
+            # محاسبه transform_info
+            x_min, y_min, z_min = vertices.min(axis=0)
+            x_max, y_max, z_max = vertices.max(axis=0)
+
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            pad_ratio = 0.06
+            x_min -= x_range * pad_ratio
+            x_max += x_range * pad_ratio
+            y_min -= y_range * pad_ratio
+            y_max += y_range * pad_ratio
+
+            scale = min((img_size - 40) / (x_max - x_min), (img_size - 40) / (y_max - y_min))
+
+            transform_info = {
+                "x_min": x_min, "y_min": y_min,
+                "scale": scale, "img_size": img_size, "padding": 20,
+            }
+
+            return img, transform_info
+
+        except Exception as e:
+            # اگر kaleido نصب نیست، به fallback برو
+            st.warning(f"⚠️ kaleido در دسترس نیست، از روش ساده استفاده می‌شود: {e}")
+            return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
 
     except Exception as e:
-        # اگر PyVista کار نکرد، به روش قبلی برگرد
-        st.warning(f"⚠️ PyVista خطا داد، از روش ساده استفاده می‌شود: {e}")
+        st.warning(f"⚠️ خطا در Plotly: {e}")
         return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
 
 
