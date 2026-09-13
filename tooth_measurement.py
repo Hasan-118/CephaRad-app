@@ -74,8 +74,8 @@ def get_next_point_type(current_type, tooth):
 # رندر نمای اکلوزال
 # ============================================================
 
-def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
-    """رندر نمای اکلوزال (از بالا) از مش STL"""
+def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
+    """رندر نمای اکلوزال (از بالا) از مش STL - نسخه واضح"""
     if mesh is None:
         return None, None
 
@@ -87,7 +87,7 @@ def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
     x_range = x_max - x_min
     y_range = y_max - y_min
 
-    pad_ratio = 0.08
+    pad_ratio = 0.06
     pad_x = x_range * pad_ratio
     pad_y = y_range * pad_ratio
 
@@ -100,25 +100,38 @@ def render_occlusal_view(mesh, img_size=900, use_top_surface=True):
     scale_y = (img_size - 40) / (y_max - y_min)
     scale = min(scale_x, scale_y)
 
-    img = Image.new('RGB', (img_size, img_size), (250, 248, 245))
+    # تصویر با پس‌زمینه سفید (نه کرم)
+    img = Image.new('RGB', (img_size, img_size), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
+    # آستانه z کمتر (فقط ۱۵٪ پایینی حذف می‌شود)
     if use_top_surface:
-        z_threshold = z_min + (z_max - z_min) * 0.55
+        z_threshold = z_min + (z_max - z_min) * 0.15
     else:
         z_threshold = z_min
 
     visible_verts = vertices[vertices[:, 2] > z_threshold]
+
+    # رسم با دایره‌های کوچک (نه نقاط تکی)
+    dot_radius = 2  # شعاع دایره (پیکسل)
 
     for v in visible_verts:
         px = int((v[0] - x_min) * scale + 20)
         py = int(img_size - (v[1] - y_min) * scale - 20)
 
         if 0 <= px < img_size and 0 <= py < img_size:
+            # شدت رنگ بر اساس z (بالاتر = تیره‌تر برای کنتراست)
             z_norm = (v[2] - z_threshold) / (z_max - z_threshold + 1e-9)
-            intensity = int(230 - 60 * (1 - z_norm))
-            intensity = max(140, min(230, intensity))
-            draw.point((px, py), fill=(intensity, intensity - 5, intensity - 10))
+            # از روشن (240) تا تیره (100)
+            intensity = int(240 - 140 * z_norm)
+            intensity = max(80, min(240, intensity))
+            
+            # رسم دایره به جای نقطه
+            draw.ellipse(
+                [px - dot_radius, py - dot_radius, 
+                 px + dot_radius, py + dot_radius],
+                fill=(intensity, intensity - 10, intensity - 20)
+            )
 
     transform_info = {
         "x_min": x_min,
