@@ -183,7 +183,6 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
             if tooth_id == current_tooth_id:
                 draw.text((dx + 12, dy - 8), f"{tooth_id}D", fill=COLOR_DISTAL)
 
-    # راهنما
     draw.rectangle([10, 10, 340, 100], fill=(255, 255, 255), outline=(200, 200, 200))
     draw.text((20, 20), f"🦷 {'فک بالا' if is_maxilla else 'فک پایین'}", fill=(0, 0, 0))
     draw.text((20, 45), "🔴 مزیال (M)  🔵 دیستال (D)", fill=(60, 60, 60))
@@ -300,13 +299,13 @@ def compute_bolton_summary(widths_max, widths_man):
 
 def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_default=0.1):
     """رابط کاربری کامل اندازه‌گیری نقطه‌به‌نقطه"""
-    
+
     # اگر مش‌ها پاس نشدند، از session_state بخوان
     if mesh_max is None:
         mesh_max = st.session_state.get("uploaded_mesh_max", None)
     if mesh_man is None:
         mesh_man = st.session_state.get("uploaded_mesh_man", None)
-    
+
     st.header("📏 اندازه‌گیری نقطه‌به‌نقطه عرض دندان‌ها")
     st.info("""
     **راهنمای ترتیب علامت‌گذاری:**
@@ -319,7 +318,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         "انتخاب فک:",
         ["🦷 فک بالا (Maxilla)", "🦷 فک پایین (Mandible)"],
         horizontal=True,
-        key="measurement_arch"
+        key="measurement_arch_v2"
     )
     is_maxilla = "بالا" in arch
 
@@ -338,7 +337,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
             min_value=0.01, max_value=1.0,
             value=pixel_size_default, step=0.01,
             format="%.3f",
-            key=f"px_size_{key}"
+            key=f"px_size_{key}_v2"
         )
 
     with st.spinner("در حال رندر نمای اکلوزال..."):
@@ -361,10 +360,162 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                 checkbox = st.checkbox(
                     tooth["name"],
                     value=is_missing,
-                    key=f"missing_{key}_{tooth['id']}"
+                    key=f"missing_{key}_v2_{tooth['id']}"
                 )
                 if checkbox and tooth["id"] not in missing_teeth:
                     missing_teeth.add(tooth["id"])
                     st.rerun()
                 elif not checkbox and tooth["id"] in missing_teeth:
                     missing_teeth.discard(tooth["id"])
+                    st.rerun()
+
+        st.info(f"📊 غایب: **{len(missing_teeth)}** | موجود: **{len(teeth) - len(missing_teeth)}**")
+
+    available_teeth = [t for t in teeth if t["id"] not in missing_teeth]
+    if not available_teeth:
+        st.warning("⚠️ همه دندان‌ها غایب هستند.")
+        return None
+
+    # دندان فعلی
+    current_idx = min(st.session_state[f"current_tooth_idx_{key}"], len(available_teeth) - 1)
+    current_tooth = available_teeth[current_idx]
+
+    # تعیین نقطه فعلی
+    tooth_points = st.session_state[f"tooth_points_{key}"]
+
+    if current_tooth["id"] not in tooth_points:
+        expected_type = get_expected_point_type(current_tooth, is_maxilla)
+    else:
+        pts = tooth_points[current_tooth["id"]]
+        if "distal" not in pts:
+            expected_type = "distal"
+        elif "mesial" not in pts:
+            expected_type = "mesial"
+        else:
+            if current_idx < len(available_teeth) - 1:
+                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
+                st.rerun()
+            expected_type = "distal"
+
+    # اگر کاربر دستی تغییر داده
+    if f"override_point_type_{key}" in st.session_state:
+        expected_type = st.session_state[f"override_point_type_{key}"]
+        del st.session_state[f"override_point_type_{key}"]
+
+    current_type = expected_type
+
+    # نمایش وضعیت
+    st.markdown("### 🎯 علامت‌گذاری")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("دندان فعلی", f"{current_tooth['name']}")
+    with col2:
+        side_label = "🟢 سمت راست" if current_tooth["side"] == "right" else "🔵 سمت چپ"
+        st.metric("سمت", side_label)
+    with col3:
+        type_label = "🔵 دیستال" if current_type == "distal" else "🔴 مزیال"
+        st.metric("نقطه فعلی", type_label)
+    with col4:
+        done = len([t for t in available_teeth if t["id"] in tooth_points
+                    and "mesial" in tooth_points[t["id"]]
+                    and "distal" in tooth_points[t["id"]]])
+        st.metric("پیشرفت", f"{done} / {len(available_teeth)}")
+
+    # دکمه‌های ناوبری
+    col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns(5)
+    with col_nav1:
+        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v2"):
+            if current_idx > 0:
+                st.session_state[f"current_tooth_idx_{key}"] = current_idx - 1
+                if f"override_point_type_{key}" in st.session_state:
+                    del st.session_state[f"override_point_type_{key}"]
+                st.rerun()
+    with col_nav2:
+        if st.button("🔄 پاک کردن", use_container_width=True, key=f"clear_{key}_v2"):
+            tid = current_tooth["id"]
+            if tid in tooth_points:
+                del tooth_points[tid]
+            st.rerun()
+    with col_nav3:
+        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v2"):
+            st.session_state[f"override_point_type_{key}"] = "distal"
+            st.rerun()
+    with col_nav4:
+        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v2"):
+            st.session_state[f"override_point_type_{key}"] = "mesial"
+            st.rerun()
+    with col_nav5:
+        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v2"):
+            if current_idx < len(available_teeth) - 1:
+                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
+                if f"override_point_type_{key}" in st.session_state:
+                    del st.session_state[f"override_point_type_{key}"]
+                st.rerun()
+
+    # رسم و نمایش
+    img_with_points = draw_points_on_image(
+        occ_img, tooth_points, teeth, missing_teeth,
+        current_tooth_id=current_tooth["id"],
+        current_point_type=current_type,
+        is_maxilla=is_maxilla
+    )
+
+    st.markdown(f"**👆 کلیک کنید تا نقطه {current_type} دندان {current_tooth['name']} ثبت شود:**")
+
+    clicked = streamlit_image_coordinates(
+        img_with_points,
+        key=f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v2"
+    )
+
+    if clicked:
+        cx, cy = clicked["x"], clicked["y"]
+        tid = current_tooth["id"]
+
+        if tid not in tooth_points:
+            tooth_points[tid] = {}
+
+        tooth_points[tid][current_type] = (cx, cy)
+
+        next_type = get_next_point_type(current_type, current_tooth)
+
+        if next_type is not None:
+            st.session_state[f"override_point_type_{key}"] = next_type
+        else:
+            if current_idx < len(available_teeth) - 1:
+                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
+            if f"override_point_type_{key}" in st.session_state:
+                del st.session_state[f"override_point_type_{key}"]
+
+        st.rerun()
+
+    # نتایج
+    st.divider()
+    st.markdown("### 📊 نتایج اندازه‌گیری")
+
+    if len(tooth_points) == 0:
+        st.info("ℹ️ هنوز هیچ دندانی علامت‌گذاری نشده است.")
+        return None
+
+    widths = compute_tooth_widths(tooth_points, teeth, missing_teeth, pixel_size_mm)
+
+    table_data = []
+    for w in widths:
+        width_str = f"{w['width_mm']} mm" if w["width_mm"] else "—"
+        space_str = f"{w['space_before_mm']} mm" if w["space_before_mm"] is not None else "—"
+        table_data.append({
+            "دندان": f"{w['tooth_name']} ({w['tooth_id']})",
+            "نوع": w["type"],
+            "عرض (mm)": width_str,
+            "فاصله با قبلی (mm)": space_str,
+            "وضعیت": w["status"]
+        })
+
+    df = pd.DataFrame(table_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    total_width = sum(w["width_mm"] for w in widths if w["width_mm"] is not None)
+    st.metric("مجموع عرض دندان‌های علامت‌گذاری‌شده", f"{round(total_width, 2)} mm")
+
+    st.session_state[f"measured_widths_{key}"] = widths
+
+    return widths
