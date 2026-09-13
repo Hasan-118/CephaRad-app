@@ -1,8 +1,19 @@
 """
 ماژول اندازه‌گیری نقطه‌به‌نقطه دندان‌ها روی نمای اکلوزال
 Aariz Precision Station - Tooth Measurement Module
-نسخه: 1.1 - با پشتیبانی از session_state و مش‌های پاس داده شده
+نسخه: 2.0 - با PyVista برای رندر حرفه‌ای
 """
+
+import os
+
+# --- تنظیم Xvfb برای PyVista off-screen rendering ---
+if 'DISPLAY' not in os.environ:
+    try:
+        os.environ['DISPLAY'] = ':99'
+    except Exception:
+        pass
+
+os.environ['PYVISTA_OFF_SCREEN'] = 'true'
 
 import streamlit as st
 import numpy as np
@@ -71,19 +82,19 @@ def get_next_point_type(current_type, tooth):
 
 
 # ============================================================
-# رندر نمای اکلوزال
+# رندر نمای اکلوزال با PyVista
 # ============================================================
 
 def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
     """
     رندر نمای اکلوزال (از بالا) با PyVista - کیفیت حرفه‌ای
+    اگر PyVista خطا بدهد، از روش پشتیبان استفاده می‌شود.
     """
     if mesh is None:
         return None, None
 
     try:
         import pyvista as pv
-        import numpy as np
 
         # تبدیل trimesh به pyvista
         vertices = np.array(mesh.vertices)
@@ -115,7 +126,7 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
         # رنگ کرم روشن (شبیه گچ دندانی)
         plotter.add_mesh(
             pv_mesh,
-            color='#F5EFE0',  # کرم روشن
+            color='#F5EFE0',
             smooth_shading=True,
             specular=0.4,
             diffuse=0.85,
@@ -129,13 +140,11 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
 
         # نمای از بالا (Occlusal)
         plotter.camera_position = 'xy'
-        plotter.camera.elevation = 90  # دقیقاً از بالا
+        plotter.camera.elevation = 90
         plotter.camera.azimuth = 0
-
-        # زوم برای پوشش کامل
         plotter.camera.zoom(1.2)
 
-        # نورپردازی سه‌گانه برای وضوح بیشتر
+        # نورپردازی سه‌گانه
         plotter.remove_all_lights()
         plotter.add_light(pv.Light(position=(1, 1, 1), intensity=0.5))
         plotter.add_light(pv.Light(position=(-1, -1, 1), intensity=0.3))
@@ -147,14 +156,12 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
         plotter.close()
 
         # تبدیل numpy array به PIL Image
-        from PIL import Image
         img = Image.fromarray(img_array)
 
-        # اگر تصویر RGB نیست، تبدیل کن
         if img.mode != 'RGB':
             img = img.convert('RGB')
 
-        # محاسبه transform_info (برای تبدیل مختصات پیکسل به ۳D)
+        # محاسبه transform_info
         x_min, y_min, z_min = vertices.min(axis=0)
         x_max, y_max, z_max = vertices.max(axis=0)
 
@@ -194,9 +201,6 @@ def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
     """
     if mesh is None:
         return None, None
-
-    import numpy as np
-    from PIL import Image, ImageDraw
 
     vertices = mesh.vertices
 
@@ -419,7 +423,6 @@ def compute_bolton_summary(widths_max, widths_man):
 def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_default=0.1):
     """رابط کاربری کامل اندازه‌گیری نقطه‌به‌نقطه"""
 
-    # اگر مش‌ها پاس نشدند، از session_state بخوان
     if mesh_max is None:
         mesh_max = st.session_state.get("uploaded_mesh_max", None)
     if mesh_man is None:
@@ -469,7 +472,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     teeth = get_arch_teeth(is_maxilla=is_maxilla)
     missing_teeth = st.session_state[f"missing_teeth_{key}"]
 
-    # Missing teeth
     with st.expander("📋 مشخص کردن دندان‌های غایب (Missing)", expanded=False):
         st.markdown("دندان‌های غایب را تیک بزنید:")
         cols = st.columns(6)
@@ -495,11 +497,9 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         st.warning("⚠️ همه دندان‌ها غایب هستند.")
         return None
 
-    # دندان فعلی
     current_idx = min(st.session_state[f"current_tooth_idx_{key}"], len(available_teeth) - 1)
     current_tooth = available_teeth[current_idx]
 
-    # تعیین نقطه فعلی
     tooth_points = st.session_state[f"tooth_points_{key}"]
 
     if current_tooth["id"] not in tooth_points:
@@ -516,14 +516,12 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                 st.rerun()
             expected_type = "distal"
 
-    # اگر کاربر دستی تغییر داده
     if f"override_point_type_{key}" in st.session_state:
         expected_type = st.session_state[f"override_point_type_{key}"]
         del st.session_state[f"override_point_type_{key}"]
 
     current_type = expected_type
 
-    # نمایش وضعیت
     st.markdown("### 🎯 علامت‌گذاری")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -540,7 +538,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                     and "distal" in tooth_points[t["id"]]])
         st.metric("پیشرفت", f"{done} / {len(available_teeth)}")
 
-    # دکمه‌های ناوبری
     col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns(5)
     with col_nav1:
         if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v2"):
@@ -571,7 +568,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                     del st.session_state[f"override_point_type_{key}"]
                 st.rerun()
 
-    # رسم و نمایش
     img_with_points = draw_points_on_image(
         occ_img, tooth_points, teeth, missing_teeth,
         current_tooth_id=current_tooth["id"],
@@ -607,7 +603,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
         st.rerun()
 
-    # نتایج
     st.divider()
     st.markdown("### 📊 نتایج اندازه‌گیری")
 
