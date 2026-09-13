@@ -1,12 +1,16 @@
 """
 Aariz 3D Analysis Station
 اپلیکیشن تحلیل سه‌بعدی اسکن داخل دهانی + ادغام با سفالومتری
-نسخه: 2.0 - با اندازه‌گیری نقطه‌به‌نقطه
+نسخه: 2.1 - با ذخیره‌سازی پایدار مش در فایل
 """
 
 import streamlit as st
 import json
+import os
+import pickle
+import hashlib
 from datetime import datetime
+from pathlib import Path
 
 # --- تنظیمات صفحه ---
 st.set_page_config(
@@ -17,7 +21,7 @@ st.set_page_config(
 
 # --- بارگذاری ماژول ۳D ---
 try:
-    from intraoral_3d_module import render_intraoral_3d_tab
+    from intraoral_3d_module import render_intraoral_3d_tab, parse_mesh
 except ImportError as e:
     st.error(f"❌ ماژول `intraoral_3d_module.py` یافت نشد: {e}")
     st.stop()
@@ -42,11 +46,65 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- عنوان ---
+# ============================================================
+# توابع ذخیره‌سازی مش در فایل
+# ============================================================
+
+CACHE_DIR = Path("/tmp/aariz_mesh_cache")
+try:
+    CACHE_DIR.mkdir(exist_ok=True)
+except Exception:
+    pass
+
+
+def save_mesh_to_cache(mesh, mesh_key):
+    """ذخیره مش در فایل موقت روی سرور"""
+    if mesh is None:
+        return None
+    try:
+        cache_path = CACHE_DIR / f"{mesh_key}.pkl"
+        with open(cache_path, 'wb') as f:
+            pickle.dump(mesh, f)
+        return str(cache_path)
+    except Exception as e:
+        st.warning(f"⚠️ خطا در ذخیره مش: {e}")
+        return None
+
+
+def load_mesh_from_cache(mesh_key):
+    """بارگذاری مش از فایل موقت"""
+    try:
+        cache_path = CACHE_DIR / f"{mesh_key}.pkl"
+        if cache_path.exists():
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def get_file_hash(uploaded_file):
+    """محاسبه hash فایل برای شناسایی یکتا"""
+    if uploaded_file is None:
+        return None
+    try:
+        uploaded_file.seek(0)
+        content = uploaded_file.read()
+        uploaded_file.seek(0)
+        return hashlib.md5(content).hexdigest()[:12]
+    except Exception:
+        return None
+
+
+# ============================================================
+# عنوان
+# ============================================================
 st.title("🦷 ایستگاه تحلیل سه‌بعدی Aariz")
 st.caption("Aariz 3D Analysis Station - Intraoral Scan")
 
-# --- بارگذاری JSON سفالومتری در سایدبار ---
+# ============================================================
+# سایدبار: آپلود JSON سفالومتری
+# ============================================================
 st.sidebar.header("📂 ادغام با تحلیل سفالومتری")
 st.sidebar.markdown("""
 اگر قبلاً تحلیل سفالومتری (۲D) را انجام داده‌اید،
@@ -56,16 +114,18 @@ st.sidebar.markdown("""
 uploaded_json = st.sidebar.file_uploader(
     "آپلود نتایج سفالومتری (JSON):",
     type=['json'],
-    key="ceph_json_upload"
+    key="ceph_json_upload_v2"
 )
 
 ceph_results = None
 if uploaded_json is not None:
     try:
+        uploaded_json.seek(0)
         ceph_results = json.load(uploaded_json)
 
         if 'version' not in ceph_results or 'measurements' not in ceph_results:
-            st.sidebar.error("❌ فایل JSON نامعتبر است.")
+            st.sidebar.error("❌ فایل JSON نامعتبر است. (باید ساختار جدید داشته باشد)")
+            st.sidebar.info("💡 لطفاً از اپ سفالومتری، فایل JSON **جدید** دانلود کنید.")
             ceph_results = None
         else:
             st.sidebar.success("✅ نتایج سفالومتری بارگذاری شد")
@@ -87,138 +147,178 @@ if uploaded_json is not None:
 else:
     st.sidebar.info("ℹ️ بدون فایل JSON، فقط تحلیل ۳D نمایش داده می‌شود.")
 
-# --- نمایش وضعیت در تب اصلی ---
+# --- نمایش وضعیت ---
 if ceph_results:
     st.success("🔗 **حالت یکپارچه فعال** — گزارش نهایی شامل هر دو تحلیل ۲D و ۳D خواهد بود.")
 else:
-    st.info("ℹ️ **حالت مستقل** — فقط تحلیل سه‌بعدی انجام می‌شود. برای ادغام، فایل JSON سفالومتری را در سایدبار آپلود کنید.")
+    st.info("ℹ️ **حالت مستقل** — برای ادغام با سفالومتری، فایل JSON را در سایدبار آپلود کنید.")
 
 st.divider()
 
 # ============================================================
-# بخش ۱: ماژول اصلی ۳D (نمای سه‌بعدی + کلیک اکلوزال + Bolton دستی)
+# بخش ۱: آپلود STL با ذخیره‌سازی پایدار
 # ============================================================
-with st.spinner("در حال بارگذاری ماژول تحلیل سه‌بعدی..."):
-    try:
-        render_intraoral_3d_tab()
-    except Exception as e:
-        st.error(f"❌ خطا در اجرای ماژول ۳D: {type(e).__name__}: {e}")
-        import traceback
-        st.code(traceback.format_exc())
+st.subheader("📤 آپلود اسکن‌های سه‌بعدی")
+
+col_up1, col_up2 = st.columns(2)
+with col_up1:
+    stl_maxilla = st.file_uploader("آپلود اسکن فک بالا (Maxilla STL/OBJ):",
+                                    type=['stl', 'obj'], key="max_stl_app3d")
+with col_up2:
+    stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
+                                     type=['stl', 'obj'], key="man_stl_app3d")
+
+# --- ذخیره‌سازی کلیدهای cache ---
+if 'mesh_cache_key_max' not in st.session_state:
+    st.session_state.mesh_cache_key_max = None
+if 'mesh_cache_key_man' not in st.session_state:
+    st.session_state.mesh_cache_key_man = None
+
+# --- مش فک بالا ---
+if stl_maxilla is not None:
+    file_hash_max = get_file_hash(stl_maxilla)
+    cache_key_max = f"max_{file_hash_max}"
+    
+    mesh_max_loaded = None
+    
+    # تلاش از session_state
+    if st.session_state.mesh_cache_key_max == cache_key_max:
+        mesh_max_loaded = st.session_state.get("uploaded_mesh_max", None)
+    
+    # تلاش از فایل cache
+    if mesh_max_loaded is None:
+        mesh_max_loaded = load_mesh_from_cache(cache_key_max)
+        if mesh_max_loaded is not None:
+            st.session_state["uploaded_mesh_max"] = mesh_max_loaded
+            st.session_state.mesh_cache_key_max = cache_key_max
+    
+    # بارگذاری جدید
+    if mesh_max_loaded is None:
+        try:
+            mesh_max_loaded = parse_mesh(stl_maxilla)
+            if mesh_max_loaded is not None:
+                st.session_state["uploaded_mesh_max"] = mesh_max_loaded
+                st.session_state.mesh_cache_key_max = cache_key_max
+                save_mesh_to_cache(mesh_max_loaded, cache_key_max)
+        except Exception as e:
+            st.error(f"❌ خطا در بارگذاری فک بالا: {e}")
+    
+    if mesh_max_loaded is not None:
+        st.success(f"✅ فک بالا: {len(mesh_max_loaded.vertices)} رأس")
+
+# --- مش فک پایین ---
+if stl_mandible is not None:
+    file_hash_man = get_file_hash(stl_mandible)
+    cache_key_man = f"man_{file_hash_man}"
+    
+    mesh_man_loaded = None
+    
+    if st.session_state.mesh_cache_key_man == cache_key_man:
+        mesh_man_loaded = st.session_state.get("uploaded_mesh_man", None)
+    
+    if mesh_man_loaded is None:
+        mesh_man_loaded = load_mesh_from_cache(cache_key_man)
+        if mesh_man_loaded is not None:
+            st.session_state["uploaded_mesh_man"] = mesh_man_loaded
+            st.session_state.mesh_cache_key_man = cache_key_man
+    
+    if mesh_man_loaded is None:
+        try:
+            mesh_man_loaded = parse_mesh(stl_mandible)
+            if mesh_man_loaded is not None:
+                st.session_state["uploaded_mesh_man"] = mesh_man_loaded
+                st.session_state.mesh_cache_key_man = cache_key_man
+                save_mesh_to_cache(mesh_man_loaded, cache_key_man)
+        except Exception as e:
+            st.error(f"❌ خطا در بارگذاری فک پایین: {e}")
+    
+    if mesh_man_loaded is not None:
+        st.success(f"✅ فک پایین: {len(mesh_man_loaded.vertices)} رأس")
 
 # ============================================================
-# بخش ۲: اندازه‌گیری نقطه‌به‌نقطه با ترتیب هوشمند
+# بخش ۲: ماژول اصلی ۳D
+# ============================================================
+mesh_max_current = st.session_state.get("uploaded_mesh_max", None)
+mesh_man_current = st.session_state.get("uploaded_mesh_man", None)
+
+if mesh_max_current is not None or mesh_man_current is not None:
+    st.divider()
+    with st.spinner("در حال بارگذاری ماژول تحلیل سه‌بعدی..."):
+        try:
+            render_intraoral_3d_tab()
+        except Exception as e:
+            st.error(f"❌ خطا در اجرای ماژول ۳D: {type(e).__name__}: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+else:
+    st.info("💡 برای شروع، لطفاً حداقل یک فایل STL/OBJ آپلود کنید.")
+
+# ============================================================
+# بخش ۳: اندازه‌گیری نقطه‌به‌نقطه
 # ============================================================
 st.divider()
-
-mesh_max = st.session_state.get("uploaded_mesh_max", None)
-mesh_man = st.session_state.get("uploaded_mesh_man", None)
 
 if MEASUREMENT_AVAILABLE:
-    if mesh_max is not None or mesh_man is not None:
+    if mesh_max_current is not None or mesh_man_current is not None:
         st.header("🎯 اندازه‌گیری نقطه‌به‌نقطه (ترتیب هوشمند)")
         st.caption("""
         این بخش روی **نمای اکلوزال** (از بالا) کار می‌کند. برای هر دندان:
         - **دندان‌های سمت راست:** ابتدا **دیستال** (🔵)، سپس **مزیال** (🔴)
         - **دندان‌های سمت چپ:** ابتدا **مزیال** (🔴)، سپس **دیستال** (🔵)
-        
-        این ترتیب، یک مسیر پیوسته از آخرین دندان راست تا آخرین دندان چپ ایجاد می‌کند.
         """)
 
         try:
-            widths_max = render_tooth_measurement_tab(mesh_max, mesh_man)
+            widths_max = render_tooth_measurement_tab(mesh_max_current, mesh_man_current)
 
-            # --- Bolton خودکار بر اساس اندازه‌گیری واقعی ---
             widths_man_stored = st.session_state.get("measured_widths_man", None)
             widths_max_stored = st.session_state.get("measured_widths_max", None)
 
             if widths_man_stored is not None and widths_max_stored is not None:
                 st.divider()
-                st.subheader("🔢 نسبت‌های بولتون (بر اساس اندازه‌گیری واقعی نقطه‌به‌نقطه)")
+                st.subheader("🔢 نسبت‌های بولتون (بر اساس اندازه‌گیری واقعی)")
 
                 bolton = compute_bolton_summary(widths_max_stored, widths_man_stored)
 
                 col1, col2 = st.columns(2)
                 with col1:
                     diff = round(bolton["overall_ratio"] - 91.3, 2)
-                    st.metric(
-                        "Overall Bolton",
-                        f"{bolton['overall_ratio']}%",
-                        f"{diff}%",
-                        help="نرمال: 91.3%"
-                    )
-                    if bolton["overall_ratio"] > 92.5:
-                        st.warning("⚠️ اضافه حجم دندانی در فک پایین")
-                    elif 0 < bolton["overall_ratio"] < 90.0:
-                        st.info("ℹ️ اضافه حجم دندانی در فک بالا")
-                    elif bolton["overall_ratio"] > 0:
-                        st.success("✅ نسبت کلی متوازن است")
-
+                    st.metric("Overall Bolton", f"{bolton['overall_ratio']}%", f"{diff}%")
                 with col2:
                     diff_ant = round(bolton["anterior_ratio"] - 77.2, 2)
-                    st.metric(
-                        "Anterior Bolton",
-                        f"{bolton['anterior_ratio']}%",
-                        f"{diff_ant}%",
-                        help="نرمال: 77.2%"
-                    )
-                    if bolton["anterior_ratio"] > 78.5:
-                        st.warning("⚠️ اضافه حجم دندان‌های قدامی فک پایین")
-                    elif 0 < bolton["anterior_ratio"] < 75.5:
-                        st.info("ℹ️ اضافه حجم دندان‌های قدامی فک بالا")
-                    elif bolton["anterior_ratio"] > 0:
-                        st.success("✅ نسبت قدامی متوازن است")
+                    st.metric("Anterior Bolton", f"{bolton['anterior_ratio']}%", f"{diff_ant}%")
 
-                st.caption(
-                    f"📊 تعداد دندان‌های اندازه‌گیری‌شده: "
-                    f"فک بالا {bolton['max_count']} | فک پایین {bolton['man_count']}"
-                )
-
-                # ذخیره در session_state برای استفاده در PDF
+                st.caption(f"📊 تعداد دندان‌های اندازه‌گیری‌شده: فک بالا {bolton['max_count']} | فک پایین {bolton['man_count']}")
                 st.session_state["bolton_auto"] = bolton
-
         except Exception as e:
             st.error(f"❌ خطا در بخش اندازه‌گیری: {type(e).__name__}: {e}")
             import traceback
             st.code(traceback.format_exc())
     else:
         st.header("🎯 اندازه‌گیری نقطه‌به‌نقطه (ترتیب هوشمند)")
-        st.info("""
-        برای فعال شدن این بخش، ابتدا باید اسکن‌های STL را در بخش بالا آپلود کنید.
-        پس از آپلود، نمای اکلوزال و ابزار اندازه‌گیری نقطه‌به‌نقطه ظاهر می‌شود.
-        """)
+        st.info("برای فعال شدن این بخش، ابتدا اسکن‌های STL را در بخش بالا آپلود کنید.")
 else:
     st.header("🎯 اندازه‌گیری نقطه‌به‌نقطه (ترتیب هوشمند)")
-    st.error(f"❌ ماژول `tooth_measurement.py` یافت نشد یا خطا داد: {MEASUREMENT_ERROR if 'MEASUREMENT_ERROR' in dir() else 'نامشخص'}")
-    st.info("""
-    برای رفع این مشکل، فایل `tooth_measurement.py` را در کنار `app_3d.py` قرار دهید
-    و مطمئن شوید که کد آن کامل و بدون خطا باشد.
-    """)
+    st.error(f"❌ ماژول `tooth_measurement.py` یافت نشد: {MEASUREMENT_ERROR}")
 
 # ============================================================
-# بخش ۳: گزارش یکپارچه PDF
+# بخش ۴: گزارش یکپارچه PDF
 # ============================================================
 if ceph_results:
     st.divider()
     st.header("📄 گزارش نهایی یکپارچه")
-    st.markdown("""
-    در این بخش می‌توانید **گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D)
-    و اسکن داخل دهانی (۳D) را دانلود کنید.
-    """)
+    st.markdown("**گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D) و اسکن داخل دهانی (۳D).")
 
-    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn"):
+    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v2"):
         try:
             from ceph_reporter import generate_unified_report
 
             with st.spinner("در حال تولید گزارش..."):
-                # ادغام نتایج ۳D در ceph_results
                 ceph_results["intraoral_3d"] = {
                     "bolton": st.session_state.get("bolton_3d", {}),
                     "bolton_auto": st.session_state.get("bolton_auto", {}),
                     "clicks_max": st.session_state.get("clicks_max", []),
                     "clicks_man": st.session_state.get("clicks_man", []),
                 }
-
                 pdf_bytes = generate_unified_report(ceph_results)
 
             st.download_button(
@@ -227,7 +327,7 @@ if ceph_results:
                 file_name=f"Aariz_Unified_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
-                key="download_unified_pdf"
+                key="download_unified_pdf_v2"
             )
             st.success("✅ گزارش آماده دانلود است.")
         except ImportError:
@@ -239,7 +339,4 @@ if ceph_results:
 else:
     st.divider()
     st.header("📄 گزارش نهایی یکپارچه")
-    st.info("""
-    برای فعال شدن این بخش، فایل JSON سفالومتری را در **سایدبار چپ** آپلود کنید.
-    پس از آپلود، دکمه تولید گزارش یکپارچه ظاهر می‌شود.
-    """)
+    st.info("برای فعال شدن این بخش، فایل JSON سفالومتری را در **سایدبار چپ** آپلود کنید.")
