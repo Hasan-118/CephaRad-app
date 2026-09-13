@@ -161,9 +161,12 @@ def render_intraoral_3d_tab():
     mesh_max = parse_mesh(stl_maxilla) if stl_maxilla else None
     mesh_man = parse_mesh(stl_mandible) if stl_mandible else None
 
+    # --- ذخیره مش‌ها در session_state برای ماژول اندازه‌گیری نقطه‌به‌نقطه ---
     if mesh_max is not None:
+        st.session_state["uploaded_mesh_max"] = mesh_max
         st.success(f"✅ فک بالا بارگذاری شد: {len(mesh_max.vertices)} رأس")
     if mesh_man is not None:
+        st.session_state["uploaded_mesh_man"] = mesh_man
         st.success(f"✅ فک پایین بارگذاری شد: {len(mesh_man.vertices)} رأس")
 
     if mesh_max is None and mesh_man is None:
