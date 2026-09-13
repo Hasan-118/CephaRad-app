@@ -1,7 +1,7 @@
 """
 Aariz 3D Analysis Station
 اپلیکیشن تحلیل سه‌بعدی اسکن داخل دهانی + ادغام با سفالومتری
-نسخه: 2.3 - با کش پایدار در حافظه سرور (st.cache_resource)
+نسخه: 3.0 - با ذخیره‌سازی در Google Drive (پایدار)
 """
 
 import streamlit as st
@@ -41,6 +41,18 @@ except ImportError as e:
     MEASUREMENT_AVAILABLE = False
     MEASUREMENT_ERROR = str(e)
 
+# --- بارگذاری ماژول Google Drive ---
+try:
+    from gdrive_storage import (
+        upload_mesh_to_drive,
+        download_mesh_from_drive,
+    )
+    GDRIVE_AVAILABLE = True
+    GDRIVE_ERROR = None
+except ImportError as e:
+    GDRIVE_AVAILABLE = False
+    GDRIVE_ERROR = str(e)
+
 # --- استایل ---
 st.markdown("""
 <style>
@@ -51,36 +63,8 @@ st.markdown("""
 
 
 # ============================================================
-# کش مش‌ها با st.cache_resource (پایدارتر از /tmp)
+# توابع کمکی
 # ============================================================
-
-@st.cache_resource(show_spinner=False)
-def get_mesh_cache():
-    """یک دیکشنری مشترک که بین sessionها باقی می‌ماند"""
-    return {}
-
-
-def save_mesh_to_cache_resource(mesh, cache_key):
-    """ذخیره مش در cache_resource (حافظه سرور)"""
-    if mesh is None:
-        return False
-    try:
-        cache = get_mesh_cache()
-        cache[cache_key] = mesh
-        return True
-    except Exception as e:
-        st.warning(f"⚠️ خطا در ذخیره مش در cache: {e}")
-        return False
-
-
-def load_mesh_from_cache_resource(cache_key):
-    """بارگذاری مش از cache_resource (حافظه سرور)"""
-    try:
-        cache = get_mesh_cache()
-        return cache.get(cache_key, None)
-    except Exception:
-        return None
-
 
 def get_file_hash(uploaded_file):
     """محاسبه hash فایل برای شناسایی یکتا"""
@@ -101,6 +85,13 @@ def get_file_hash(uploaded_file):
 st.title("🦷 ایستگاه تحلیل سه‌بعدی Aariz")
 st.caption("Aariz 3D Analysis Station - Intraoral Scan")
 
+# --- نمایش وضعیت Google Drive ---
+if GDRIVE_AVAILABLE:
+    st.sidebar.success("✅ Google Drive متصل است")
+else:
+    st.sidebar.warning(f"⚠️ Google Drive در دسترس نیست: {GDRIVE_ERROR}")
+    st.sidebar.info("مش‌ها فقط در حافظه موقت ذخیره می‌شوند.")
+
 # ============================================================
 # سایدبار: آپلود JSON سفالومتری
 # ============================================================
@@ -113,7 +104,7 @@ st.sidebar.markdown("""
 uploaded_json = st.sidebar.file_uploader(
     "آپلود نتایج سفالومتری (JSON):",
     type=['json'],
-    key="ceph_json_upload_v4"
+    key="ceph_json_upload_v5"
 )
 
 ceph_results = None
@@ -154,17 +145,17 @@ else:
 st.divider()
 
 # ============================================================
-# بخش ۱: آپلود STL + ذخیره در cache سرور
+# بخش ۱: آپلود STL + ذخیره در Google Drive
 # ============================================================
 st.subheader("📤 آپلود اسکن‌های سه‌بعدی")
 
 col_up1, col_up2 = st.columns(2)
 with col_up1:
     stl_maxilla = st.file_uploader("آپلود اسکن فک بالا (Maxilla STL/OBJ):",
-                                    type=['stl', 'obj'], key="max_stl_app3d_v3")
+                                    type=['stl', 'obj'], key="max_stl_app3d_v4")
 with col_up2:
     stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
-                                     type=['stl', 'obj'], key="man_stl_app3d_v3")
+                                     type=['stl', 'obj'], key="man_stl_app3d_v4")
 
 # --- ذخیره‌سازی کلیدهای cache در session_state ---
 if 'mesh_cache_key_max' not in st.session_state:
@@ -176,6 +167,7 @@ if 'mesh_cache_key_man' not in st.session_state:
 if stl_maxilla is not None:
     file_hash_max = get_file_hash(stl_maxilla)
     cache_key_max = f"max_{file_hash_max}"
+    gdrive_filename = f"aariz_mesh_{cache_key_max}.pkl"
 
     mesh_max_loaded = None
 
@@ -183,13 +175,14 @@ if stl_maxilla is not None:
     if st.session_state.mesh_cache_key_max == cache_key_max:
         mesh_max_loaded = st.session_state.get("uploaded_mesh_max", None)
 
-    # مرحله ۲: تلاش از cache سرور (پایدارتر)
-    if mesh_max_loaded is None:
-        mesh_max_loaded = load_mesh_from_cache_resource(cache_key_max)
-        if mesh_max_loaded is not None:
-            st.session_state["uploaded_mesh_max"] = mesh_max_loaded
-            st.session_state.mesh_cache_key_max = cache_key_max
-            st.info("📥 فک بالا از cache سرور بازیابی شد")
+    # مرحله ۲: تلاش از Google Drive
+    if mesh_max_loaded is None and GDRIVE_AVAILABLE:
+        with st.spinner("🔍 در حال جستجو در Google Drive..."):
+            mesh_max_loaded = download_mesh_from_drive(gdrive_filename)
+            if mesh_max_loaded is not None:
+                st.session_state["uploaded_mesh_max"] = mesh_max_loaded
+                st.session_state.mesh_cache_key_max = cache_key_max
+                st.info("📥 فک بالا از Google Drive بازیابی شد")
 
     # مرحله ۳: بارگذاری جدید
     if mesh_max_loaded is None:
@@ -199,8 +192,14 @@ if stl_maxilla is not None:
                 if mesh_max_loaded is not None:
                     st.session_state["uploaded_mesh_max"] = mesh_max_loaded
                     st.session_state.mesh_cache_key_max = cache_key_max
-                    save_mesh_to_cache_resource(mesh_max_loaded, cache_key_max)
-                    st.info("📤 فک بالا در cache سرور ذخیره شد")
+                    # ذخیره در Google Drive
+                    if GDRIVE_AVAILABLE:
+                        with st.spinner("📤 در حال ذخیره در Google Drive..."):
+                            result = upload_mesh_to_drive(mesh_max_loaded, gdrive_filename)
+                            if result:
+                                st.info("📤 فک بالا در Google Drive ذخیره شد")
+                            else:
+                                st.warning("⚠️ ذخیره در Google Drive ناموفق بود")
         except Exception as e:
             st.error(f"❌ خطا در بارگذاری فک بالا: {e}")
 
@@ -211,6 +210,7 @@ if stl_maxilla is not None:
 if stl_mandible is not None:
     file_hash_man = get_file_hash(stl_mandible)
     cache_key_man = f"man_{file_hash_man}"
+    gdrive_filename = f"aariz_mesh_{cache_key_man}.pkl"
 
     mesh_man_loaded = None
 
@@ -218,13 +218,14 @@ if stl_mandible is not None:
     if st.session_state.mesh_cache_key_man == cache_key_man:
         mesh_man_loaded = st.session_state.get("uploaded_mesh_man", None)
 
-    # مرحله ۲: تلاش از cache سرور
-    if mesh_man_loaded is None:
-        mesh_man_loaded = load_mesh_from_cache_resource(cache_key_man)
-        if mesh_man_loaded is not None:
-            st.session_state["uploaded_mesh_man"] = mesh_man_loaded
-            st.session_state.mesh_cache_key_man = cache_key_man
-            st.info("📥 فک پایین از cache سرور بازیابی شد")
+    # مرحله ۲: تلاش از Google Drive
+    if mesh_man_loaded is None and GDRIVE_AVAILABLE:
+        with st.spinner("🔍 در حال جستجو در Google Drive..."):
+            mesh_man_loaded = download_mesh_from_drive(gdrive_filename)
+            if mesh_man_loaded is not None:
+                st.session_state["uploaded_mesh_man"] = mesh_man_loaded
+                st.session_state.mesh_cache_key_man = cache_key_man
+                st.info("📥 فک پایین از Google Drive بازیابی شد")
 
     # مرحله ۳: بارگذاری جدید
     if mesh_man_loaded is None:
@@ -234,8 +235,13 @@ if stl_mandible is not None:
                 if mesh_man_loaded is not None:
                     st.session_state["uploaded_mesh_man"] = mesh_man_loaded
                     st.session_state.mesh_cache_key_man = cache_key_man
-                    save_mesh_to_cache_resource(mesh_man_loaded, cache_key_man)
-                    st.info("📤 فک پایین در cache سرور ذخیره شد")
+                    if GDRIVE_AVAILABLE:
+                        with st.spinner("📤 در حال ذخیره در Google Drive..."):
+                            result = upload_mesh_to_drive(mesh_man_loaded, gdrive_filename)
+                            if result:
+                                st.info("📤 فک پایین در Google Drive ذخیره شد")
+                            else:
+                                st.warning("⚠️ ذخیره در Google Drive ناموفق بود")
         except Exception as e:
             st.error(f"❌ خطا در بارگذاری فک پایین: {e}")
 
@@ -259,7 +265,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_max_current, target_faces=20000)
                 fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
-                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v2")
+                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v3")
             except Exception as e:
                 st.error(f"خطا در نمایش فک بالا: {e}")
 
@@ -269,7 +275,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_man_current, target_faces=20000)
                 fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
-                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v2")
+                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v3")
             except Exception as e:
                 st.error(f"خطا در نمایش فک پایین: {e}")
 else:
@@ -330,7 +336,7 @@ if ceph_results:
     st.header("📄 گزارش نهایی یکپارچه")
     st.markdown("**گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D) و اسکن داخل دهانی (۳D).")
 
-    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v4"):
+    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v5"):
         try:
             from ceph_reporter import generate_unified_report
 
@@ -349,7 +355,7 @@ if ceph_results:
                 file_name=f"Aariz_Unified_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
-                key="download_unified_pdf_v4"
+                key="download_unified_pdf_v5"
             )
             st.success("✅ گزارش آماده دانلود است.")
         except ImportError:
