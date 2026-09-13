@@ -75,9 +75,128 @@ def get_next_point_type(current_type, tooth):
 # ============================================================
 
 def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
-    """رندر نمای اکلوزال (از بالا) از مش STL - نسخه واضح"""
+    """
+    رندر نمای اکلوزال (از بالا) با PyVista - کیفیت حرفه‌ای
+    """
     if mesh is None:
         return None, None
+
+    try:
+        import pyvista as pv
+        import numpy as np
+
+        # تبدیل trimesh به pyvista
+        vertices = np.array(mesh.vertices)
+        faces = np.array(mesh.faces)
+
+        # PyVista نیاز به فرمت خاص دارد: [3, i0, i1, i2, 3, i3, i4, i5, ...]
+        faces_pv = np.hstack([
+            np.full((len(faces), 1), 3),
+            faces
+        ]).flatten()
+
+        pv_mesh = pv.PolyData(vertices, faces_pv)
+
+        # محاسبه نرمال‌ها برای نورپردازی صاف
+        pv_mesh.compute_normals(
+            cell_normals=False,
+            point_normals=True,
+            inplace=True,
+            auto_orient_normals=True
+        )
+
+        # ایجاد پلاتر off-screen
+        plotter = pv.Plotter(
+            window_size=[img_size, img_size],
+            off_screen=True,
+            border=False
+        )
+
+        # رنگ کرم روشن (شبیه گچ دندانی)
+        plotter.add_mesh(
+            pv_mesh,
+            color='#F5EFE0',  # کرم روشن
+            smooth_shading=True,
+            specular=0.4,
+            diffuse=0.85,
+            ambient=0.4,
+            show_edges=False,
+            lighting=True
+        )
+
+        # پس‌زمینه سفید
+        plotter.background_color = 'white'
+
+        # نمای از بالا (Occlusal)
+        plotter.camera_position = 'xy'
+        plotter.camera.elevation = 90  # دقیقاً از بالا
+        plotter.camera.azimuth = 0
+
+        # زوم برای پوشش کامل
+        plotter.camera.zoom(1.2)
+
+        # نورپردازی سه‌گانه برای وضوح بیشتر
+        plotter.remove_all_lights()
+        plotter.add_light(pv.Light(position=(1, 1, 1), intensity=0.5))
+        plotter.add_light(pv.Light(position=(-1, -1, 1), intensity=0.3))
+        plotter.add_light(pv.Light(position=(0, 0, 2), intensity=0.4))
+
+        # رندر و گرفتن تصویر
+        plotter.render()
+        img_array = plotter.screenshot(return_img=True)
+        plotter.close()
+
+        # تبدیل numpy array به PIL Image
+        from PIL import Image
+        img = Image.fromarray(img_array)
+
+        # اگر تصویر RGB نیست، تبدیل کن
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        # محاسبه transform_info (برای تبدیل مختصات پیکسل به ۳D)
+        x_min, y_min, z_min = vertices.min(axis=0)
+        x_max, y_max, z_max = vertices.max(axis=0)
+
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+
+        pad_ratio = 0.06
+        x_min -= x_range * pad_ratio
+        x_max += x_range * pad_ratio
+        y_min -= y_range * pad_ratio
+        y_max += y_range * pad_ratio
+
+        scale = min(
+            (img_size - 40) / (x_max - x_min),
+            (img_size - 40) / (y_max - y_min)
+        )
+
+        transform_info = {
+            "x_min": x_min,
+            "y_min": y_min,
+            "scale": scale,
+            "img_size": img_size,
+            "padding": 20,
+        }
+
+        return img, transform_info
+
+    except Exception as e:
+        # اگر PyVista کار نکرد، به روش قبلی برگرد
+        st.warning(f"⚠️ PyVista خطا داد، از روش ساده استفاده می‌شود: {e}")
+        return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
+
+
+def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
+    """
+    روش پشتیبان (fallback) در صورتی که PyVista خطا بدهد
+    """
+    if mesh is None:
+        return None, None
+
+    import numpy as np
+    from PIL import Image, ImageDraw
 
     vertices = mesh.vertices
 
@@ -88,23 +207,19 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
     y_range = y_max - y_min
 
     pad_ratio = 0.06
-    pad_x = x_range * pad_ratio
-    pad_y = y_range * pad_ratio
+    x_min -= x_range * pad_ratio
+    x_max += x_range * pad_ratio
+    y_min -= y_range * pad_ratio
+    y_max += y_range * pad_ratio
 
-    x_min -= pad_x
-    x_max += pad_x
-    y_min -= pad_y
-    y_max += pad_y
+    scale = min(
+        (img_size - 40) / (x_max - x_min),
+        (img_size - 40) / (y_max - y_min)
+    )
 
-    scale_x = (img_size - 40) / (x_max - x_min)
-    scale_y = (img_size - 40) / (y_max - y_min)
-    scale = min(scale_x, scale_y)
-
-    # تصویر با پس‌زمینه سفید (نه کرم)
     img = Image.new('RGB', (img_size, img_size), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # آستانه z کمتر (فقط ۱۵٪ پایینی حذف می‌شود)
     if use_top_surface:
         z_threshold = z_min + (z_max - z_min) * 0.15
     else:
@@ -112,26 +227,17 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
 
     visible_verts = vertices[vertices[:, 2] > z_threshold]
 
-    # رسم با دایره‌های کوچک (نه نقاط تکی)
-    dot_radius = 2  # شعاع دایره (پیکسل)
-
     for v in visible_verts:
         px = int((v[0] - x_min) * scale + 20)
         py = int(img_size - (v[1] - y_min) * scale - 20)
 
         if 0 <= px < img_size and 0 <= py < img_size:
-            # شدت رنگ بر اساس z (بالاتر = تیره‌تر برای کنتراست)
             z_norm = (v[2] - z_threshold) / (z_max - z_threshold + 1e-9)
-            # از روشن (240) تا تیره (100)
-            intensity = int(240 - 140 * z_norm)
-            intensity = max(80, min(240, intensity))
-            
-            # رسم دایره به جای نقطه
-            draw.ellipse(
-                [px - dot_radius, py - dot_radius, 
-                 px + dot_radius, py + dot_radius],
-                fill=(intensity, intensity - 10, intensity - 20)
-            )
+            intensity = int(220 - 140 * z_norm)
+            intensity = max(60, min(220, intensity))
+            r = 2
+            draw.ellipse([px - r, py - r, px + r, py + r],
+                         fill=(intensity, intensity - 10, intensity - 20))
 
     transform_info = {
         "x_min": x_min,
