@@ -1,7 +1,7 @@
 """
 ماژول اندازه‌گیری نقطه‌به‌نقطه دندان‌ها روی نمای اکلوزال
 Aariz Precision Station - Tooth Measurement Module
-نسخه: 4.0 - با استفاده از callback برای پایداری کامل state
+نسخه: 4.1 - callback برای دکمه‌ها + کلیک مستقیم
 """
 
 import streamlit as st
@@ -164,7 +164,7 @@ def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
 
 
 # ============================================================
-# توابع callback برای دکمه‌ها
+# توابع callback
 # ============================================================
 
 def _cb_prev(is_maxilla):
@@ -227,49 +227,11 @@ def _cb_clear_tooth(is_maxilla, current_tooth_id):
     st.session_state[f"_clear_result_{key}"] = "ok"
 
 
-def _cb_handle_click(is_maxilla, current_tooth_id, current_type, n_teeth):
-    """callback برای کلیک روی تصویر"""
-    key = "max" if is_maxilla else "man"
-
-    # دریافت مختصات از widget
-    img_key = f"occlusal_click_{key}_{current_tooth_id}_{current_type}_v6"
-    clicked = st.session_state.get(img_key)
-    if not clicked:
-        return
-
-    cx, cy = clicked["x"], clicked["y"]
-
-    points = dict(st.session_state.get(f"tooth_points_{key}", {}))
-    pts = dict(points.get(current_tooth_id, {}))
-    pts[current_type] = (cx, cy)
-    points[current_tooth_id] = pts
-    st.session_state[f"tooth_points_{key}"] = points
-
-    # منطق حرکت به نقطه/دندان بعدی
-    teeth_list = get_arch_teeth(is_maxilla=is_maxilla)
-    missing = st.session_state.get(f"missing_teeth_{key}", set())
-    available = [t for t in teeth_list if t["id"] not in missing]
-
-    current_tooth = next((t for t in available if t["id"] == current_tooth_id), None)
-    if current_tooth is None:
-        return
-
-    next_type = get_next_point_type(current_type, current_tooth)
-    if next_type is None:
-        # دندان کامل شد → برو بعدی
-        try:
-            idx = available.index(current_tooth)
-        except ValueError:
-            idx = 0
-        if idx < len(available) - 1:
-            st.session_state[f"current_tooth_idx_{key}"] = idx + 1
-
-
 def _cb_reset_arch(is_maxilla):
     key = "max" if is_maxilla else "man"
     st.session_state[f"tooth_points_{key}"] = {}
     st.session_state[f"current_tooth_idx_{key}"] = 0
-    st.session_state.pop(f"occlusal_img_{key}_v6", None)
+    st.session_state.pop(f"occlusal_img_{key}_v7", None)
 
 
 def _cb_toggle_missing(is_maxilla, tooth_id, checked):
@@ -437,7 +399,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         "انتخاب فک:",
         ["🦷 فک بالا (Maxilla)", "🦷 فک پایین (Mandible)"],
         horizontal=True,
-        key="measurement_arch_v6"
+        key="measurement_arch_v7"
     )
     is_maxilla = "بالا" in arch
     key = "max" if is_maxilla else "man"
@@ -455,11 +417,11 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
             "Pixel Size (mm/px):",
             min_value=0.01, max_value=1.0,
             value=pixel_size_default, step=0.01,
-            format="%.3f", key=f"px_size_{key}_v6"
+            format="%.3f", key=f"px_size_{key}_v7"
         )
 
     # --- کش تصویر اکلوزال ---
-    img_cache_key = f"occlusal_img_{key}_v6"
+    img_cache_key = f"occlusal_img_{key}_v7"
     if img_cache_key not in st.session_state:
         with st.spinner("در حال رندر نمای اکلوزال..."):
             occ_img, transform_info = render_occlusal_view(mesh, img_size=900)
@@ -485,8 +447,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                     value=is_missing,
                     key=f"missing_cb_{key}_{tooth['id']}",
                     on_change=_cb_toggle_missing,
-                    args=(is_maxilla, tooth["id"],
-                          not is_missing)  # مقدار جدید
+                    args=(is_maxilla, tooth["id"], not is_missing)
                 )
         st.info(f"📊 غایب: **{len(missing_teeth)}** | موجود: **{len(teeth) - len(missing_teeth)}**")
 
@@ -505,7 +466,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     )
     total_count = len(available_teeth)
 
-    # --- نمایش toast‌های callback ---
+    # --- Toast ها ---
     if st.session_state.pop(f"_undo_result_{key}", None) == "ok":
         st.toast("آخرین نقطه پاک شد.", icon="↩️")
     if st.session_state.pop(f"_clear_result_{key}", None) == "ok":
@@ -532,7 +493,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
         st.session_state[f"measured_widths_{key}"] = widths
 
-        st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}_v6",
+        st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}_v7",
                   on_click=_cb_reset_arch, args=(is_maxilla,))
 
         return widths
@@ -560,7 +521,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                 st.rerun()
             current_type = get_expected_point_type(current_tooth, is_maxilla)
 
-    # نمایش وضعیت
     st.markdown("### 🎯 علامت‌گذاری")
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric("دندان فعلی", current_tooth['name'])
@@ -576,34 +536,34 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     col_nav1, col_nav2, col_nav3, col_nav4, col_nav5, col_nav6 = st.columns(6)
 
     with col_nav1:
-        st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v6",
+        st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v7",
                   on_click=_cb_prev, args=(is_maxilla,))
 
     with col_nav2:
-        st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v6",
+        st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v7",
                   on_click=_cb_next, args=(is_maxilla, len(available_teeth)))
 
     with col_nav3:
-        st.button("↩️ پاک آخرین نقطه", use_container_width=True, key=f"undo_{key}_v6",
+        st.button("↩️ پاک آخرین نقطه", use_container_width=True, key=f"undo_{key}_v7",
                   on_click=_cb_undo,
                   args=(is_maxilla, current_tooth["id"], current_type, current_tooth["side"]))
 
     with col_nav4:
-        st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v6",
+        st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v7",
                   on_click=_cb_set_type,
                   args=(is_maxilla, current_tooth["id"], "distal"))
 
     with col_nav5:
-        st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v6",
+        st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v7",
                   on_click=_cb_set_type,
                   args=(is_maxilla, current_tooth["id"], "mesial"))
 
     with col_nav6:
-        st.button("🗑 پاک دندان", use_container_width=True, key=f"clear_{key}_v6",
+        st.button("🗑 پاک دندان", use_container_width=True, key=f"clear_{key}_v7",
                   on_click=_cb_clear_tooth,
                   args=(is_maxilla, current_tooth["id"]))
 
-    # رسم و نمایش
+    # --- رسم و نمایش ---
     img_with_points = draw_points_on_image(
         occ_img, tooth_points, teeth, missing_teeth,
         current_tooth_id=current_tooth["id"],
@@ -613,15 +573,32 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
     st.markdown(f"**👆 کلیک کنید تا نقطه {current_type} دندان {current_tooth['name']} ثبت شود:**")
 
-    img_key = f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v6"
-    streamlit_image_coordinates(
-        img_with_points,
-        key=img_key,
-        on_click=_cb_handle_click,
-        args=(is_maxilla, current_tooth["id"], current_type, len(available_teeth))
-    )
+    # --- کلیک روی تصویر (بدون callback) ---
+    img_key = f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v7"
+    clicked = streamlit_image_coordinates(img_with_points, key=img_key)
 
-    # نمایش نتایج جزئی
+    if clicked:
+        cx, cy = clicked["x"], clicked["y"]
+        tid = current_tooth["id"]
+
+        # --- صریحاً کپی بگیر و تغییر بده ---
+        current_points = dict(st.session_state.get(f"tooth_points_{key}", {}))
+        pts = dict(current_points.get(tid, {}))
+        pts[current_type] = (cx, cy)
+        current_points[tid] = pts
+
+        # --- صریحاً ذخیره کن ---
+        st.session_state[f"tooth_points_{key}"] = current_points
+
+        # --- حرکت به نقطه/دندان بعدی ---
+        next_type = get_next_point_type(current_type, current_tooth)
+        if next_type is None:
+            if current_idx < len(available_teeth) - 1:
+                st.session_state[f"current_tooth_idx_{key}"] = int(current_idx + 1)
+
+        st.rerun()
+
+    # --- نمایش نتایج جزئی ---
     st.divider()
     st.markdown("### 📊 نتایج اندازه‌گیری")
 
@@ -644,8 +621,4 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
     total_width = sum(w["width_mm"] for w in widths if w["width_mm"] is not None)
-    st.metric("مجموع عرض دندان‌های علامت‌گذاری‌شده", f"{round(total_width, 2)} mm")
-
-    st.session_state[f"measured_widths_{key}"] = widths
-
-    return widths
+   
