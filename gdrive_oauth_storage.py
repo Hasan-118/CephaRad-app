@@ -11,6 +11,7 @@ import hashlib
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 TOKEN_URI = 'https://oauth2.googleapis.com/token'
+REDIRECT_URI = 'http://localhost'
 
 
 def _get_config():
@@ -84,12 +85,12 @@ def get_auth_url():
                 "client_secret": config['client_secret'],
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": TOKEN_URI,
-                "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
+                "redirect_uris": [REDIRECT_URI],
             }
         },
         scopes=SCOPES,
     )
-    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    flow.redirect_uri = REDIRECT_URI
 
     auth_url, _ = flow.authorization_url(
         access_type='offline',
@@ -114,12 +115,12 @@ def exchange_code_for_token(code):
                 "client_secret": config['client_secret'],
                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                 "token_uri": TOKEN_URI,
-                "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob"],
+                "redirect_uris": [REDIRECT_URI],
             }
         },
         scopes=SCOPES,
     )
-    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    flow.redirect_uri = REDIRECT_URI
 
     try:
         flow.fetch_token(code=code)
