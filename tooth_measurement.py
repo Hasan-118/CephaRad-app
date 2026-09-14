@@ -1,7 +1,7 @@
 """
 ماژول اندازه‌گیری نقطه‌به‌نقطه دندان‌ها روی نمای اکلوزال
 Aariz Precision Station - Tooth Measurement Module
-نسخه: 2.0 - با کش تصویر و رفع هنگ
+نسخه: 3.0 - با مدیریت state پیشرفته و بدون حلقه بی‌نهایت
 """
 
 import streamlit as st
@@ -13,11 +13,10 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 
 # ============================================================
-# لیست دندان‌ها (FDI Notation)
+# لیست دندان‌ها
 # ============================================================
 
 def get_arch_teeth(is_maxilla=True):
-    """لیست دندان‌ها از آخرین دندان سمت راست تا آخرین دندان سمت چپ"""
     if is_maxilla:
         return [
             {"id": 16, "name": "6 راست", "type": "molar", "side": "right", "order": 6},
@@ -51,23 +50,14 @@ def get_arch_teeth(is_maxilla=True):
 
 
 def get_expected_point_type(tooth, is_maxilla=True):
-    """نقطه شروع برای دندان"""
-    if tooth["side"] == "right":
-        return "distal"
-    else:
-        return "mesial"
+    return "distal" if tooth["side"] == "right" else "mesial"
 
 
 def get_next_point_type(current_type, tooth):
-    """نقطه بعدی برای همان دندان"""
     if tooth["side"] == "right":
-        if current_type == "distal":
-            return "mesial"
-        return None
+        return "mesial" if current_type == "distal" else None
     else:
-        if current_type == "mesial":
-            return "distal"
-        return None
+        return "distal" if current_type == "mesial" else None
 
 
 # ============================================================
@@ -75,13 +65,11 @@ def get_next_point_type(current_type, tooth):
 # ============================================================
 
 def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
-    """رندر نمای اکلوزال (از بالا) با Plotly + Kaleido"""
     if mesh is None:
         return None, None
 
     try:
         import plotly.graph_objects as go
-
         vertices = mesh.vertices
         faces = mesh.faces
 
@@ -89,32 +77,22 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
             go.Mesh3d(
                 x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
                 i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                color='#F5EFE0',
-                opacity=1.0,
-                flatshading=False,
-                lighting=dict(
-                    ambient=0.6, diffuse=0.9, specular=0.3,
-                    roughness=0.4, fresnel=0.1
-                ),
+                color='#F5EFE0', opacity=1.0, flatshading=False,
+                lighting=dict(ambient=0.6, diffuse=0.9, specular=0.3,
+                              roughness=0.4, fresnel=0.1),
                 lightposition=dict(x=0, y=0, z=1000)
             )
         ])
-
         fig.update_layout(
             scene=dict(
                 xaxis=dict(visible=False, showbackground=False),
                 yaxis=dict(visible=False, showbackground=False),
                 zaxis=dict(visible=False, showbackground=False),
-                aspectmode='data',
-                bgcolor='white',
-                camera=dict(
-                    eye=dict(x=0, y=0, z=2.5),
-                    up=dict(x=0, y=1, z=0)
-                )
+                aspectmode='data', bgcolor='white',
+                camera=dict(eye=dict(x=0, y=0, z=2.5), up=dict(x=0, y=1, z=0))
             ),
             margin=dict(r=0, l=0, b=0, t=0),
-            paper_bgcolor='white',
-            showlegend=False
+            paper_bgcolor='white', showlegend=False
         )
 
         try:
@@ -123,7 +101,6 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
 
             x_min, y_min, z_min = vertices.min(axis=0)
             x_max, y_max, z_max = vertices.max(axis=0)
-
             x_range = x_max - x_min
             y_range = y_max - y_min
             pad_ratio = 0.06
@@ -131,27 +108,20 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
             x_max += x_range * pad_ratio
             y_min -= y_range * pad_ratio
             y_max += y_range * pad_ratio
-
             scale = min((img_size - 40) / (x_max - x_min), (img_size - 40) / (y_max - y_min))
 
             transform_info = {
                 "x_min": x_min, "y_min": y_min,
                 "scale": scale, "img_size": img_size, "padding": 20,
             }
-
             return img, transform_info
-
-        except Exception as e:
-            st.warning(f"⚠️ kaleido در دسترس نیست، از روش ساده استفاده می‌شود: {e}")
+        except Exception:
             return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
-
-    except Exception as e:
-        st.warning(f"⚠️ خطا در Plotly: {e}")
+    except Exception:
         return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
 
 
 def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
-    """روش پشتیبان در صورت شکست Plotly"""
     if mesh is None:
         return None, None
 
@@ -172,11 +142,7 @@ def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
     img = Image.new('RGB', (img_size, img_size), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    if use_top_surface:
-        z_threshold = z_min + (z_max - z_min) * 0.15
-    else:
-        z_threshold = z_min
-
+    z_threshold = z_min + (z_max - z_min) * 0.15 if use_top_surface else z_min
     visible_verts = vertices[vertices[:, 2] > z_threshold]
 
     for v in visible_verts:
@@ -198,19 +164,15 @@ def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
 
 
 # ============================================================
-# مدیریت وضعیت
+# مدیریت state
 # ============================================================
 
 def init_measurement_state(is_maxilla):
-    """مقداردهی اولیه وضعیت"""
     key = "max" if is_maxilla else "man"
-
     if f"missing_teeth_{key}" not in st.session_state:
         st.session_state[f"missing_teeth_{key}"] = set()
-
     if f"tooth_points_{key}" not in st.session_state:
         st.session_state[f"tooth_points_{key}"] = {}
-
     if f"current_tooth_idx_{key}" not in st.session_state:
         st.session_state[f"current_tooth_idx_{key}"] = 0
 
@@ -218,7 +180,6 @@ def init_measurement_state(is_maxilla):
 def draw_points_on_image(img, points_dict, teeth_list, missing_set,
                           current_tooth_id=None, current_point_type=None,
                           is_maxilla=True):
-    """رسم نقاط روی تصویر"""
     img_copy = img.copy()
     draw = ImageDraw.Draw(img_copy)
 
@@ -240,7 +201,6 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
                          fill=COLOR_MESIAL, outline="white", width=2)
             if tooth_id == current_tooth_id:
                 draw.text((mx + 12, my - 8), f"{tooth_id}M", fill=COLOR_MESIAL)
-
         if "distal" in pts:
             dx, dy = pts["distal"]
             r = 8 if (tooth_id == current_tooth_id and current_point_type == "distal") else 5
@@ -262,40 +222,30 @@ def draw_points_on_image(img, points_dict, teeth_list, missing_set,
 # ============================================================
 
 def compute_tooth_widths(points_dict, teeth_list, missing_set, pixel_size_mm=0.1):
-    """محاسبه عرض و فضای بین دندانی"""
     results = []
     previous_distal = None
 
     for tooth in teeth_list:
         tooth_id = tooth["id"]
-
         if tooth_id in missing_set:
             results.append({
-                "tooth_id": tooth_id,
-                "tooth_name": tooth["name"],
-                "type": tooth["type"],
-                "width_mm": None,
-                "space_before_mm": None,
-                "status": "غایب (Missing)"
+                "tooth_id": tooth_id, "tooth_name": tooth["name"],
+                "type": tooth["type"], "width_mm": None,
+                "space_before_mm": None, "status": "غایب (Missing)"
             })
             continue
 
         pts = points_dict.get(tooth_id, {})
-
         if "mesial" not in pts or "distal" not in pts:
             results.append({
-                "tooth_id": tooth_id,
-                "tooth_name": tooth["name"],
-                "type": tooth["type"],
-                "width_mm": None,
-                "space_before_mm": None,
-                "status": "علامت‌گذاری نشده"
+                "tooth_id": tooth_id, "tooth_name": tooth["name"],
+                "type": tooth["type"], "width_mm": None,
+                "space_before_mm": None, "status": "علامت‌گذاری نشده"
             })
             continue
 
         mx, my = pts["mesial"]
         dx, dy = pts["distal"]
-
         distance_px = np.sqrt((mx - dx) ** 2 + (my - dy) ** 2)
         distance_mm = distance_px * pixel_size_mm
 
@@ -315,47 +265,34 @@ def compute_tooth_widths(points_dict, teeth_list, missing_set, pixel_size_mm=0.1
             status = "✅ نرمال"
 
         results.append({
-            "tooth_id": tooth_id,
-            "tooth_name": tooth["name"],
-            "type": tooth["type"],
-            "width_mm": round(distance_mm, 2),
+            "tooth_id": tooth_id, "tooth_name": tooth["name"],
+            "type": tooth["type"], "width_mm": round(distance_mm, 2),
             "space_before_mm": round(space_mm, 2) if space_mm is not None else None,
             "status": status
         })
-
         previous_distal = pts["distal"]
 
     return results
 
 
 def compute_bolton_summary(widths_max, widths_man):
-    """محاسبه نسبت‌های بولتون"""
     max_valid = [t for t in widths_max if t["width_mm"] is not None]
     man_valid = [t for t in widths_man if t["width_mm"] is not None]
-
     anterior_types = ["incisor", "canine"]
-
     max_anterior = [t for t in max_valid if t["type"] in anterior_types]
     man_anterior = [t for t in man_valid if t["type"] in anterior_types]
 
     max_total = sum(t["width_mm"] for t in max_valid) if max_valid else 0
     man_total = sum(t["width_mm"] for t in man_valid) if man_valid else 0
-
     max_ant = sum(t["width_mm"] for t in max_anterior) if max_anterior else 0
     man_ant = sum(t["width_mm"] for t in man_anterior) if man_anterior else 0
 
-    overall_ratio = round((man_total / max_total) * 100, 2) if max_total > 0 else 0
-    anterior_ratio = round((man_ant / max_ant) * 100, 2) if max_ant > 0 else 0
-
     return {
-        "max_total": round(max_total, 2),
-        "man_total": round(man_total, 2),
-        "max_anterior": round(max_ant, 2),
-        "man_anterior": round(man_ant, 2),
-        "overall_ratio": overall_ratio,
-        "anterior_ratio": anterior_ratio,
-        "max_count": len(max_valid),
-        "man_count": len(man_valid),
+        "max_total": round(max_total, 2), "man_total": round(man_total, 2),
+        "max_anterior": round(max_ant, 2), "man_anterior": round(man_ant, 2),
+        "overall_ratio": round((man_total / max_total) * 100, 2) if max_total > 0 else 0,
+        "anterior_ratio": round((man_ant / max_ant) * 100, 2) if max_ant > 0 else 0,
+        "max_count": len(max_valid), "man_count": len(man_valid),
     }
 
 
@@ -364,7 +301,6 @@ def compute_bolton_summary(widths_max, widths_man):
 # ============================================================
 
 def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_default=0.1):
-    """رابط کاربری کامل اندازه‌گیری نقطه‌به‌نقطه"""
 
     if mesh_max is None:
         mesh_max = st.session_state.get("uploaded_mesh_max", None)
@@ -372,20 +308,15 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         mesh_man = st.session_state.get("uploaded_mesh_man", None)
 
     st.header("📏 اندازه‌گیری نقطه‌به‌نقطه عرض دندان‌ها")
-    st.info("""
-    **راهنمای ترتیب علامت‌گذاری:**
-    - از **آخرین دندان سمت راست** شروع کنید
-    - برای هر دندان سمت راست: ابتدا **دیستال** (🔵) سپس **مزیال** (🔴)
-    - برای هر دندان سمت چپ: ابتدا **مزیال** (🔴) سپس **دیستال** (🔵)
-    """)
 
     arch = st.radio(
         "انتخاب فک:",
         ["🦷 فک بالا (Maxilla)", "🦷 فک پایین (Mandible)"],
         horizontal=True,
-        key="measurement_arch_v3"
+        key="measurement_arch_v4"
     )
     is_maxilla = "بالا" in arch
+    key = "max" if is_maxilla else "man"
 
     mesh = mesh_max if is_maxilla else mesh_man
     if mesh is None:
@@ -393,7 +324,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         return None
 
     init_measurement_state(is_maxilla)
-    key = "max" if is_maxilla else "man"
 
     col_px1, col_px2 = st.columns([1, 3])
     with col_px1:
@@ -401,12 +331,11 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
             "Pixel Size (mm/px):",
             min_value=0.01, max_value=1.0,
             value=pixel_size_default, step=0.01,
-            format="%.3f",
-            key=f"px_size_{key}_v3"
+            format="%.3f", key=f"px_size_{key}_v4"
         )
 
-    # --- کش کردن تصویر اکلوزال در session_state ---
-    img_cache_key = f"occlusal_img_{key}"
+    # --- کش تصویر اکلوزال ---
+    img_cache_key = f"occlusal_img_{key}_v4"
     if img_cache_key not in st.session_state:
         with st.spinner("در حال رندر نمای اکلوزال..."):
             occ_img, transform_info = render_occlusal_view(mesh, img_size=900)
@@ -422,21 +351,19 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     missing_teeth = st.session_state[f"missing_teeth_{key}"]
 
     with st.expander("📋 مشخص کردن دندان‌های غایب (Missing)", expanded=False):
-        st.markdown("دندان‌های غایب را تیک بزنید:")
         cols = st.columns(6)
         for idx, tooth in enumerate(teeth):
             with cols[idx % 6]:
                 is_missing = tooth["id"] in missing_teeth
                 checkbox = st.checkbox(
-                    tooth["name"],
-                    value=is_missing,
-                    key=f"missing_{key}_v3_{tooth['id']}"
+                    tooth["name"], value=is_missing,
+                    key=f"missing_{key}_v4_{tooth['id']}"
                 )
-                if checkbox and tooth["id"] not in missing_teeth:
-                    missing_teeth.add(tooth["id"])
-                    st.rerun()
-                elif not checkbox and tooth["id"] in missing_teeth:
-                    missing_teeth.discard(tooth["id"])
+                if checkbox != is_missing:
+                    if checkbox:
+                        missing_teeth.add(tooth["id"])
+                    else:
+                        missing_teeth.discard(tooth["id"])
                     st.rerun()
 
         st.info(f"📊 غایب: **{len(missing_teeth)}** | موجود: **{len(teeth) - len(missing_teeth)}**")
@@ -447,6 +374,8 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         return None
 
     tooth_points = st.session_state[f"tooth_points_{key}"]
+
+    # شمارش دندان‌های تکمیل‌شده
     completed_count = sum(
         1 for t in available_teeth
         if t["id"] in tooth_points
@@ -454,14 +383,14 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         and "distal" in tooth_points[t["id"]]
     )
     total_count = len(available_teeth)
-    is_completed = (completed_count == total_count)
 
-    if is_completed:
+    # --- بررسی اتمام ---
+    if completed_count == total_count and total_count > 0:
         st.success(f"✅ فک {'بالا' if is_maxilla else 'پایین'} کامل شد! ({total_count} / {total_count})")
 
         widths = compute_tooth_widths(tooth_points, teeth, missing_teeth, pixel_size_mm)
         total_width = sum(w["width_mm"] for w in widths if w["width_mm"] is not None)
-        st.metric("مجموع عرض دندان‌های علامت‌گذاری‌شده", f"{round(total_width, 2)} mm")
+        st.metric("مجموع عرض", f"{round(total_width, 2)} mm")
 
         table_data = []
         for w in widths:
@@ -469,101 +398,102 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
             space_str = f"{w['space_before_mm']} mm" if w["space_before_mm"] is not None else "—"
             table_data.append({
                 "دندان": f"{w['tooth_name']} ({w['tooth_id']})",
-                "نوع": w["type"],
-                "عرض (mm)": width_str,
-                "فاصله با قبلی (mm)": space_str,
-                "وضعیت": w["status"]
+                "نوع": w["type"], "عرض (mm)": width_str,
+                "فاصله با قبلی": space_str, "وضعیت": w["status"]
             })
-        df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
         st.session_state[f"measured_widths_{key}"] = widths
 
-        if st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}"):
+        if st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}_v4"):
             for t in available_teeth:
-                if t["id"] in tooth_points:
-                    del tooth_points[t["id"]]
+                tooth_points.pop(t["id"], None)
             st.session_state[f"current_tooth_idx_{key}"] = 0
-            st.session_state.pop(f"occlusal_img_{key}", None)
             st.rerun()
 
         return widths
 
+    # --- ادامه اندازه‌گیری ---
     current_idx = min(st.session_state[f"current_tooth_idx_{key}"], len(available_teeth) - 1)
     current_tooth = available_teeth[current_idx]
 
+    # تعیین نقطه فعلی
     if current_tooth["id"] not in tooth_points:
-        expected_type = get_expected_point_type(current_tooth, is_maxilla)
+        current_type = get_expected_point_type(current_tooth, is_maxilla)
     else:
         pts = tooth_points[current_tooth["id"]]
         if "distal" not in pts:
-            expected_type = "distal"
+            current_type = "distal"
         elif "mesial" not in pts:
-            expected_type = "mesial"
+            current_type = "mesial"
         else:
+            # هر دو ثبت شده → دندان بعدی
             if current_idx < len(available_teeth) - 1:
                 st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
                 st.rerun()
-            else:
-                st.rerun()
-            expected_type = "distal"
+            current_type = get_expected_point_type(current_tooth, is_maxilla)
 
-    if f"override_point_type_{key}" in st.session_state:
-        expected_type = st.session_state.pop(f"override_point_type_{key}")
-
-    current_type = expected_type
-
+    # نمایش وضعیت
     st.markdown("### 🎯 علامت‌گذاری")
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("دندان فعلی", f"{current_tooth['name']}")
+    with col1: st.metric("دندان فعلی", current_tooth['name'])
     with col2:
-        side_label = "🟢 سمت راست" if current_tooth["side"] == "right" else "🔵 سمت چپ"
-        st.metric("سمت", side_label)
+        side = "🟢 راست" if current_tooth["side"] == "right" else "🔵 چپ"
+        st.metric("سمت", side)
     with col3:
         type_label = "🔵 دیستال" if current_type == "distal" else "🔴 مزیال"
-        st.metric("نقطه فعلی", type_label)
-    with col4:
-        st.metric("پیشرفت", f"{completed_count} / {total_count}")
+        st.metric("نقطه", type_label)
+    with col4: st.metric("پیشرفت", f"{completed_count} / {total_count}")
 
+    # --- دکمه‌های ناوبری ---
     col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns(5)
     with col_nav1:
-        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v3"):
+        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v4"):
             if current_idx > 0:
                 st.session_state[f"current_tooth_idx_{key}"] = current_idx - 1
-                st.session_state.pop(f"override_point_type_{key}", None)
                 st.rerun()
             else:
                 st.toast("این اولین دندان است.", icon="⚠️")
 
     with col_nav2:
-        if st.button("🔄 پاک کردن این دندان", use_container_width=True, key=f"clear_{key}_v3"):
+        if st.button("🔄 پاک کردن", use_container_width=True, key=f"clear_{key}_v4"):
             tid = current_tooth["id"]
             if tid in tooth_points:
                 del tooth_points[tid]
-                st.toast(f"نقاط دندان {current_tooth['name']} پاک شد.", icon="✅")
-            st.session_state.pop(f"override_point_type_{key}", None)
-            st.rerun()
+                st.toast(f"نقاط {current_tooth['name']} پاک شد.", icon="✅")
+                st.rerun()
+            else:
+                st.toast("این دندان نقطه‌ای ندارد.", icon="ℹ️")
 
     with col_nav3:
-        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v3"):
-            st.session_state[f"override_point_type_{key}"] = "distal"
+        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v4"):
+            if current_tooth["id"] not in tooth_points:
+                tooth_points[current_tooth["id"]] = {}
+            pts = tooth_points[current_tooth["id"]]
+            if "distal" in pts:
+                del pts["distal"]
+            st.toast("آماده برای ثبت دیستال", icon="🔵")
             st.rerun()
 
     with col_nav4:
-        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v3"):
-            st.session_state[f"override_point_type_{key}"] = "mesial"
+        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v4"):
+            if current_tooth["id"] not in tooth_points:
+                tooth_points[current_tooth["id"]] = {}
+            pts = tooth_points[current_tooth["id"]]
+            if "mesial" in pts:
+                del pts["mesial"]
+            st.toast("آماده برای ثبت مزیال", icon="🔴")
             st.rerun()
 
     with col_nav5:
-        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v3"):
+        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v4"):
             if current_idx < len(available_teeth) - 1:
                 st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-                st.session_state.pop(f"override_point_type_{key}", None)
                 st.rerun()
             else:
                 st.toast("این آخرین دندان است.", icon="⚠️")
 
+    # رسم و نمایش
     img_with_points = draw_points_on_image(
         occ_img, tooth_points, teeth, missing_teeth,
         current_tooth_id=current_tooth["id"],
@@ -575,7 +505,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
     clicked = streamlit_image_coordinates(
         img_with_points,
-        key=f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v3"
+        key=f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v4"
     )
 
     if clicked:
@@ -589,17 +519,14 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
         next_type = get_next_point_type(current_type, current_tooth)
 
-        if next_type is not None:
-            st.session_state[f"override_point_type_{key}"] = next_type
-        else:
+        if next_type is None:
+            # این دندان کامل شد
             if current_idx < len(available_teeth) - 1:
                 st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-                st.session_state.pop(f"override_point_type_{key}", None)
-            else:
-                st.session_state.pop(f"override_point_type_{key}", None)
 
         st.rerun()
 
+    # نمایش نتایج جزئی
     st.divider()
     st.markdown("### 📊 نتایج اندازه‌گیری")
 
@@ -615,14 +542,11 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
         space_str = f"{w['space_before_mm']} mm" if w["space_before_mm"] is not None else "—"
         table_data.append({
             "دندان": f"{w['tooth_name']} ({w['tooth_id']})",
-            "نوع": w["type"],
-            "عرض (mm)": width_str,
-            "فاصله با قبلی (mm)": space_str,
-            "وضعیت": w["status"]
+            "نوع": w["type"], "عرض (mm)": width_str,
+            "فاصله با قبلی": space_str, "وضعیت": w["status"]
         })
 
-    df = pd.DataFrame(table_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
     total_width = sum(w["width_mm"] for w in widths if w["width_mm"] is not None)
     st.metric("مجموع عرض دندان‌های علامت‌گذاری‌شده", f"{round(total_width, 2)} mm")
