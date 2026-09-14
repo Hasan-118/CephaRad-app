@@ -1,6 +1,6 @@
 """
 Google Drive Storage with OAuth 2.0
-ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE
+ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE + دیباگ
 """
 
 import streamlit as st
@@ -89,9 +89,13 @@ def get_auth_url():
 
     from urllib.parse import urlencode
 
+    # پاک کردن هر code_verifier قبلی برای جلوگیری از تداخل
+    if "oauth_code_verifier" in st.session_state:
+        del st.session_state["oauth_code_verifier"]
+
     code_verifier, code_challenge = _generate_pkce_pair()
 
-    # ذخیره code_verifier در session_state
+    # ذخیره code_verifier جدید در session_state
     st.session_state["oauth_code_verifier"] = code_verifier
 
     params = {
@@ -110,7 +114,7 @@ def get_auth_url():
 
 
 def exchange_code_for_token(code):
-    """تبدیل code به refresh token با code_verifier ذخیره‌شده"""
+    """تبدیل code به refresh token با code_verifier ذخیره‌شده + دیباگ"""
     import requests
 
     config = _get_config()
@@ -133,12 +137,23 @@ def exchange_code_for_token(code):
 
     try:
         response = requests.post(TOKEN_URI, data=token_data, timeout=30)
+
+        # --- نمایش پاسخ کامل گوگل برای دیباگ ---
+        st.write("### 🔍 دیباگ OAuth")
+        st.write(f"**Status Code:** `{response.status_code}`")
+        st.write("**Response Body:**")
+        st.code(response.text)
+        st.write(f"**Code Verifier (طول):** `{len(code_verifier)}`")
+        st.write(f"**Code (طول):** `{len(code)}`")
+        st.write(f"**Redirect URI:** `{REDIRECT_URI}`")
+        st.write(f"**Client ID (۶ کاراکتر اول):** `{config['client_id'][:6]}...`")
+        # --- پایان دیباگ ---
+
         response.raise_for_status()
         tokens = response.json()
         refresh_token = tokens.get('refresh_token')
 
         if refresh_token:
-            # پاک کردن code_verifier برای بار بعد
             st.session_state.pop("oauth_code_verifier", None)
             return refresh_token
         else:
