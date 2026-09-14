@@ -1,7 +1,7 @@
 """
 ماژول اندازه‌گیری نقطه‌به‌نقطه دندان‌ها روی نمای اکلوزال
 Aariz Precision Station - Tooth Measurement Module
-نسخه: 5.1 - با تست دیباگ برای عیب‌یابی دکمه‌ها
+نسخه: 6.0 - با PyVista برای رندر پایدار
 """
 
 import streamlit as st
@@ -9,7 +9,26 @@ import numpy as np
 import io
 import pandas as pd
 from PIL import Image, ImageDraw
-from streamlit_image_coordinates import streamlit_image_coordinates
+
+
+# ============================================================
+# تلاش برای import PyVista
+# ============================================================
+PYVISTA_AVAILABLE = False
+PYVISTA_ERROR = None
+STPYVISTA_AVAILABLE = False
+
+try:
+    import pyvista as pv
+    PYVISTA_AVAILABLE = True
+except ImportError as e:
+    PYVISTA_ERROR = str(e)
+
+try:
+    from stpyvista import stpyvista
+    STPYVISTA_AVAILABLE = True
+except ImportError as e:
+    STPYVISTA_AVAILABLE = False
 
 
 # ============================================================
@@ -75,12 +94,129 @@ def get_current_point_type(tooth, pts, is_maxilla):
 
 
 # ============================================================
-# رندر نمای اکلوزال
+# تبدیل trimesh به PyVista
 # ============================================================
 
-def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
+def trimesh_to_pyvista(mesh):
+    """تبدیل مش trimesh به PyVista PolyData"""
+    vertices = np.array(mesh.vertices)
+    faces = np.array(mesh.faces)
+
+    # PyVista فرمت: [3, i0, i1, i2, 3, i3, i4, i5, ...]
+    faces_pv = np.hstack([
+        np.full((len(faces), 1), 3),
+        faces
+    ]).flatten()
+
+    return pv.PolyData(vertices, faces_pv)
+
+
+# ============================================================
+# رندر با PyVista
+# ============================================================
+
+def render_occlusal_view_with_pyvista(mesh, points_dict, current_tooth_id,
+                                       current_point_type, is_maxilla,
+                                       widget_key="occlusal_pv"):
+    """
+    رندر نمای اکلوزال با PyVista و نمایش با stpyvista.
+    """
+    if not PYVISTA_AVAILABLE:
+        st.error(f"❌ PyVista در دسترس نیست: {PYVISTA_ERROR}")
+        return False
+
+    if not STPYVISTA_AVAILABLE:
+        st.error("❌ stpyvista در دسترس نیست")
+        return False
+
+    try:
+        pv_mesh = trimesh_to_pyvista(mesh)
+        pv_mesh.compute_normals(
+            cell_normals=False, point_normals=True,
+            inplace=True, auto_orient_normals=True
+        )
+
+        # پلاتر off-screen
+        plotter = pv.Plotter(window_size=[900, 900], off_screen=True, border=False)
+
+        # افزودن مش
+        plotter.add_mesh(
+            pv_mesh,
+            color='#F5EFE0',
+            smooth_shading=True,
+            specular=0.4,
+            diffuse=0.85,
+            ambient=0.4,
+            show_edges=False,
+            lighting=True
+        )
+
+        # پس‌زمینه سفید
+        plotter.background_color = 'white'
+
+        # افزودن نقاط و خطوط
+        for tooth_id, pts in points_dict.items():
+            if "mesial" in pts:
+                mx, my = pts["mesial"]
+                color = 'red'
+                size = 15 if (tooth_id == current_tooth_id and current_point_type == "mesial") else 10
+                plotter.add_points(
+                    np.array([[mx, my, 0]]),
+                    color=color,
+                    point_size=size,
+                    render_points_as_spheres=True
+                )
+
+            if "distal" in pts:
+                dx, dy = pts["distal"]
+                color = 'blue'
+                size = 15 if (tooth_id == current_tooth_id and current_point_type == "distal") else 10
+                plotter.add_points(
+                    np.array([[dx, dy, 0]]),
+                    color=color,
+                    point_size=size,
+                    render_points_as_spheres=True
+                )
+
+            if "mesial" in pts and "distal" in pts:
+                mx, my = pts["mesial"]
+                dx, dy = pts["distal"]
+                line = pv.Line(
+                    np.array([mx, my, 0]),
+                    np.array([dx, dy, 0])
+                )
+                plotter.add_mesh(line, color='green', line_width=2)
+
+        # تنظیم دوربین (نمای از بالا)
+        plotter.camera_position = 'xy'
+        plotter.camera.elevation = 90
+        plotter.camera.azimuth = 0
+        plotter.camera.zoom(1.2)
+
+        # نورپردازی
+        plotter.remove_all_lights()
+        plotter.add_light(pv.Light(position=(1, 1, 1), intensity=0.5))
+        plotter.add_light(pv.Light(position=(-1, -1, 1), intensity=0.3))
+        plotter.add_light(pv.Light(position=(0, 0, 2), intensity=0.4))
+
+        # نمایش با stpyvista
+        stpyvista(plotter, key=widget_key)
+        plotter.close()
+        return True
+
+    except Exception as e:
+        st.error(f"❌ خطا در رندر PyVista: {type(e).__name__}: {e}")
+        return False
+
+
+# ============================================================
+# Fallback: رندر با Plotly + تبدیل به تصویر
+# ============================================================
+
+def render_occlusal_view_fallback(mesh, img_size=900):
+    """رندر نمای اکلوزال با Plotly (روش قبلی)"""
     if mesh is None:
-        return None, None
+        return None
 
     try:
         import plotly.graph_objects as go
@@ -109,72 +245,12 @@ def render_occlusal_view(mesh, img_size=1000, use_top_surface=True):
             paper_bgcolor='white', showlegend=False
         )
 
-        try:
-            img_bytes = fig.to_image(format="png", width=img_size, height=img_size, scale=1)
-            img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-
-            x_min, y_min, z_min = vertices.min(axis=0)
-            x_max, y_max, z_max = vertices.max(axis=0)
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            pad_ratio = 0.06
-            x_min -= x_range * pad_ratio
-            x_max += x_range * pad_ratio
-            y_min -= y_range * pad_ratio
-            y_max += y_range * pad_ratio
-            scale = min((img_size - 40) / (x_max - x_min), (img_size - 40) / (y_max - y_min))
-
-            transform_info = {
-                "x_min": x_min, "y_min": y_min,
-                "scale": scale, "img_size": img_size, "padding": 20,
-            }
-            return img, transform_info
-        except Exception:
-            return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
-    except Exception:
-        return _render_occlusal_view_fallback(mesh, img_size, use_top_surface)
-
-
-def _render_occlusal_view_fallback(mesh, img_size=1000, use_top_surface=True):
-    if mesh is None:
-        return None, None
-
-    vertices = mesh.vertices
-    x_min, y_min, z_min = vertices.min(axis=0)
-    x_max, y_max, z_max = vertices.max(axis=0)
-
-    x_range = x_max - x_min
-    y_range = y_max - y_min
-    pad_ratio = 0.06
-    x_min -= x_range * pad_ratio
-    x_max += x_range * pad_ratio
-    y_min -= y_range * pad_ratio
-    y_max += y_range * pad_ratio
-
-    scale = min((img_size - 40) / (x_max - x_min), (img_size - 40) / (y_max - y_min))
-
-    img = Image.new('RGB', (img_size, img_size), (255, 255, 255))
-    draw = ImageDraw.Draw(img)
-
-    z_threshold = z_min + (z_max - z_min) * 0.15 if use_top_surface else z_min
-    visible_verts = vertices[vertices[:, 2] > z_threshold]
-
-    for v in visible_verts:
-        px = int((v[0] - x_min) * scale + 20)
-        py = int(img_size - (v[1] - y_min) * scale - 20)
-        if 0 <= px < img_size and 0 <= py < img_size:
-            z_norm = (v[2] - z_threshold) / (z_max - z_threshold + 1e-9)
-            intensity = int(220 - 140 * z_norm)
-            intensity = max(60, min(220, intensity))
-            r = 2
-            draw.ellipse([px - r, py - r, px + r, py + r],
-                         fill=(intensity, intensity - 10, intensity - 20))
-
-    transform_info = {
-        "x_min": x_min, "y_min": y_min,
-        "scale": scale, "img_size": img_size, "padding": 20,
-    }
-    return img, transform_info
+        img_bytes = fig.to_image(format="png", width=img_size, height=img_size, scale=1)
+        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+        return img
+    except Exception as e:
+        st.warning(f"⚠️ خطا در رندر Plotly: {e}")
+        return None
 
 
 # ============================================================
@@ -193,46 +269,6 @@ def init_measurement_state(is_maxilla):
         st.session_state[f"current_tooth_idx_{key}"] = 0
     if not isinstance(st.session_state[f"current_tooth_idx_{key}"], int):
         st.session_state[f"current_tooth_idx_{key}"] = 0
-
-
-def draw_points_on_image(img, points_dict, teeth_list, missing_set,
-                          current_tooth_id=None, current_point_type=None,
-                          is_maxilla=True):
-    img_copy = img.copy()
-    draw = ImageDraw.Draw(img_copy)
-
-    COLOR_MESIAL = (220, 38, 38)
-    COLOR_DISTAL = (37, 99, 235)
-    COLOR_LINE = (16, 185, 129)
-
-    for tooth_id, pts in points_dict.items():
-        if "mesial" in pts and "distal" in pts:
-            mx, my = pts["mesial"]
-            dx, dy = pts["distal"]
-            draw.line([(mx, my), (dx, dy)], fill=COLOR_LINE, width=2)
-
-    for tooth_id, pts in points_dict.items():
-        if "mesial" in pts:
-            mx, my = pts["mesial"]
-            r = 8 if (tooth_id == current_tooth_id and current_point_type == "mesial") else 5
-            draw.ellipse([mx - r, my - r, mx + r, my + r],
-                         fill=COLOR_MESIAL, outline="white", width=2)
-            if tooth_id == current_tooth_id:
-                draw.text((mx + 12, my - 8), f"{tooth_id}M", fill=COLOR_MESIAL)
-        if "distal" in pts:
-            dx, dy = pts["distal"]
-            r = 8 if (tooth_id == current_tooth_id and current_point_type == "distal") else 5
-            draw.ellipse([dx - r, dy - r, dx + r, dy + r],
-                         fill=COLOR_DISTAL, outline="white", width=2)
-            if tooth_id == current_tooth_id:
-                draw.text((dx + 12, dy - 8), f"{tooth_id}D", fill=COLOR_DISTAL)
-
-    draw.rectangle([10, 10, 340, 100], fill=(255, 255, 255), outline=(200, 200, 200))
-    draw.text((20, 20), f"🦷 {'فک بالا' if is_maxilla else 'فک پایین'}", fill=(0, 0, 0))
-    draw.text((20, 45), "🔴 مزیال (M)  🔵 دیستال (D)", fill=(60, 60, 60))
-    draw.text((20, 70), "مسیر: از راست به چپ", fill=(60, 60, 60))
-
-    return img_copy
 
 
 # ============================================================
@@ -325,13 +361,21 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     if mesh_man is None:
         mesh_man = st.session_state.get("uploaded_mesh_man", None)
 
+    # --- نمایش وضعیت PyVista ---
+    if PYVISTA_AVAILABLE and STPYVISTA_AVAILABLE:
+        st.success("✅ PyVista و stpyvista آماده هستند")
+    elif PYVISTA_AVAILABLE and not STPYVISTA_AVAILABLE:
+        st.warning("⚠️ PyVista هست ولی stpyvista نیست - از روش جایگزین استفاده می‌شود")
+    else:
+        st.error(f"❌ PyVista در دسترس نیست: {PYVISTA_ERROR}")
+
     st.header("📏 اندازه‌گیری نقطه‌به‌نقطه عرض دندان‌ها")
 
     arch = st.radio(
         "انتخاب فک:",
         ["🦷 فک بالا (Maxilla)", "🦷 فک پایین (Mandible)"],
         horizontal=True,
-        key="measurement_arch_v9"
+        key="measurement_arch_pv"
     )
     is_maxilla = "بالا" in arch
     key = "max" if is_maxilla else "man"
@@ -349,21 +393,8 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
             "Pixel Size (mm/px):",
             min_value=0.01, max_value=1.0,
             value=pixel_size_default, step=0.01,
-            format="%.3f", key=f"px_size_{key}_v9"
+            format="%.3f", key=f"px_size_{key}_pv"
         )
-
-    # --- کش تصویر اکلوزال ---
-    img_cache_key = f"occlusal_img_{key}_v9"
-    if img_cache_key not in st.session_state:
-        with st.spinner("در حال رندر نمای اکلوزال..."):
-            occ_img, transform_info = render_occlusal_view(mesh, img_size=900)
-            st.session_state[img_cache_key] = (occ_img, transform_info)
-    else:
-        occ_img, transform_info = st.session_state[img_cache_key]
-
-    if occ_img is None:
-        st.error("❌ خطا در رندر نمای اکلوزال")
-        return None
 
     teeth = get_arch_teeth(is_maxilla=is_maxilla)
     missing_teeth = st.session_state[f"missing_teeth_{key}"]
@@ -378,7 +409,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                 is_missing = st.checkbox(
                     tooth["name"],
                     value=was_missing,
-                    key=f"missing_cb_{key}_{tooth['id']}_v9"
+                    key=f"missing_cb_{key}_{tooth['id']}_pv"
                 )
                 if is_missing != was_missing:
                     if is_missing:
@@ -430,7 +461,7 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
         st.session_state[f"measured_widths_{key}"] = widths
 
-        if st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}_v9"):
+        if st.button("🔄 شروع مجدد این فک", key=f"reset_arch_{key}_pv"):
             st.session_state[f"tooth_points_{key}"] = {}
             st.session_state[f"current_tooth_idx_{key}"] = 0
             st.rerun()
@@ -469,20 +500,6 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
 
     # نمایش وضعیت
     st.markdown("### 🎯 علامت‌گذاری")
-
-    # ============ تست دیباگ ============
-    with st.expander("🧪 تست دیباگ (این بخش فقط برای عیب‌یابی است)", expanded=True):
-        st.write(f"🔍 **current_idx:** `{current_idx}`")
-        st.write(f"🔍 **len(available_teeth):** `{len(available_teeth)}`")
-        st.write(f"🔍 **current_tooth:** `{current_tooth['name']}` (id={current_tooth['id']})")
-        st.write(f"🔍 **current_type:** `{current_type}`")
-        st.write(f"🔍 **completed_count:** `{completed_count}`")
-        st.write(f"🔍 **تعداد نقاط ذخیره‌شده:** `{len(tooth_points)}`")
-        st.write(f"🔍 **نقاط این دندان:** `{tooth_points.get(current_tooth['id'], {})}`")
-
-        if st.button("🧪 تست دکمه", key=f"test_btn_{key}_v9"):
-            st.success("✅ دکمه تست کار کرد!")
-
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric("دندان فعلی", current_tooth['name'])
     with col2:
@@ -497,21 +514,19 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
     col_nav1, col_nav2, col_nav3, col_nav4, col_nav5, col_nav6 = st.columns(6)
 
     with col_nav1:
-        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_v9"):
+        if st.button("◀ قبلی", use_container_width=True, key=f"prev_{key}_pv"):
             new_idx = max(0, current_idx - 1)
             st.session_state[f"current_tooth_idx_{key}"] = new_idx
-            st.toast(f"رفتن به دندان {available_teeth[new_idx]['name']}", icon="◀")
             st.rerun()
 
     with col_nav2:
-        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_v9"):
+        if st.button("⏭ بعدی", use_container_width=True, key=f"next_{key}_pv"):
             new_idx = min(len(available_teeth) - 1, current_idx + 1)
             st.session_state[f"current_tooth_idx_{key}"] = new_idx
-            st.toast(f"رفتن به دندان {available_teeth[new_idx]['name']}", icon="⏭")
             st.rerun()
 
     with col_nav3:
-        if st.button("↩️ پاک آخرین نقطه", use_container_width=True, key=f"undo_{key}_v9"):
+        if st.button("↩️ پاک آخرین نقطه", use_container_width=True, key=f"undo_{key}_pv"):
             points = dict(st.session_state.get(f"tooth_points_{key}", {}))
             pts_c = dict(points.get(current_tooth["id"], {}))
 
@@ -533,73 +548,45 @@ def render_tooth_measurement_tab(mesh_max=None, mesh_man=None, pixel_size_defaul
                 points.pop(current_tooth["id"], None)
 
             st.session_state[f"tooth_points_{key}"] = points
-
-            if removed:
-                st.toast("آخرین نقطه پاک شد.", icon="↩️")
-            else:
-                st.toast("نقطه‌ای برای پاک کردن نیست.", icon="ℹ️")
             st.rerun()
 
     with col_nav4:
-        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_v9"):
+        if st.button("🔵 دیستال", use_container_width=True, key=f"set_d_{key}_pv"):
             points = dict(st.session_state.get(f"tooth_points_{key}", {}))
             pts_c = dict(points.get(current_tooth["id"], {}))
             if "distal" in pts_c:
                 del pts_c["distal"]
             points[current_tooth["id"]] = pts_c
             st.session_state[f"tooth_points_{key}"] = points
-            st.toast("آماده برای ثبت دیستال", icon="🔵")
             st.rerun()
 
     with col_nav5:
-        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_v9"):
+        if st.button("🔴 مزیال", use_container_width=True, key=f"set_m_{key}_pv"):
             points = dict(st.session_state.get(f"tooth_points_{key}", {}))
             pts_c = dict(points.get(current_tooth["id"], {}))
             if "mesial" in pts_c:
                 del pts_c["mesial"]
             points[current_tooth["id"]] = pts_c
             st.session_state[f"tooth_points_{key}"] = points
-            st.toast("آماده برای ثبت مزیال", icon="🔴")
             st.rerun()
 
     with col_nav6:
-        if st.button("🗑 پاک دندان", use_container_width=True, key=f"clear_{key}_v9"):
+        if st.button("🗑 پاک دندان", use_container_width=True, key=f"clear_{key}_pv"):
             points = dict(st.session_state.get(f"tooth_points_{key}", {}))
             points.pop(current_tooth["id"], None)
             st.session_state[f"tooth_points_{key}"] = points
-            st.toast(f"کل نقاط {current_tooth['name']} پاک شد.", icon="🗑")
             st.rerun()
 
-    # --- رسم و نمایش تصویر ---
-    img_with_points = draw_points_on_image(
-        occ_img, st.session_state.get(f"tooth_points_{key}", {}), teeth, missing_teeth,
-        current_tooth_id=current_tooth["id"],
-        current_point_type=current_type,
-        is_maxilla=is_maxilla
+    # ============ رندر PyVista ============
+    st.markdown(f"**👆 روی مش کلیک کنید تا نقطه {current_type} دندان {current_tooth['name']} ثبت شود:**")
+
+    # نمایش مش با PyVista
+    render_occlusal_view_with_pyvista(
+        mesh, tooth_points, current_tooth["id"],
+        current_type, is_maxilla, widget_key=f"occlusal_pv_{key}"
     )
 
-    st.markdown(f"**👆 کلیک کنید تا نقطه {current_type} دندان {current_tooth['name']} ثبت شود:**")
-
-    img_key = f"occlusal_click_{key}_{current_tooth['id']}_{current_type}_v9"
-    clicked = streamlit_image_coordinates(img_with_points, key=img_key)
-
-    if clicked:
-        cx, cy = clicked["x"], clicked["y"]
-
-        points = dict(st.session_state.get(f"tooth_points_{key}", {}))
-        pts_new = dict(points.get(current_tooth["id"], {}))
-        pts_new[current_type] = (cx, cy)
-        points[current_tooth["id"]] = pts_new
-        st.session_state[f"tooth_points_{key}"] = points
-
-        next_type = get_next_point_type(current_type, current_tooth)
-        if next_type is None:
-            if current_idx < len(available_teeth) - 1:
-                st.session_state[f"current_tooth_idx_{key}"] = current_idx + 1
-
-        st.rerun()
-
-    # --- نمایش نتایج جزئی ---
+    # ============ نمایش نتایج جزئی ============
     st.divider()
     st.markdown("### 📊 نتایج اندازه‌گیری")
 
