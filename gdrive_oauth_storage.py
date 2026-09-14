@@ -1,6 +1,6 @@
 """
 Google Drive Storage with OAuth 2.0
-ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE + دیباگ
+ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE + فایل موقت
 """
 
 import streamlit as st
@@ -9,11 +9,15 @@ import io
 import hashlib
 import secrets
 import base64
+import os
 
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 TOKEN_URI = 'https://oauth2.googleapis.com/token'
 REDIRECT_URI = 'http://localhost'
+
+# مسیر فایل موقت برای ذخیره code_verifier
+PKCE_FILE = '/tmp/aariz_pkce_verifier.txt'
 
 
 def _get_config():
@@ -31,12 +35,41 @@ def _get_config():
 
 
 def _generate_pkce_pair():
-    """ساخت code_verifier و code_challenge به صورت دستی"""
+    """ساخت code_verifier و code_challenge"""
     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode('utf-8')
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode('utf-8')).digest()
     ).rstrip(b'=').decode('utf-8')
     return code_verifier, code_challenge
+
+
+def _save_verifier(code_verifier):
+    """ذخیره code_verifier در فایل موقت"""
+    try:
+        with open(PKCE_FILE, 'w') as f:
+            f.write(code_verifier)
+    except Exception as e:
+        st.warning(f"⚠️ خطا در ذخیره code_verifier: {e}")
+
+
+def _load_verifier():
+    """بارگذاری code_verifier از فایل موقت"""
+    try:
+        if os.path.exists(PKCE_FILE):
+            with open(PKCE_FILE, 'r') as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return None
+
+
+def _delete_verifier():
+    """پاک کردن فایل code_verifier"""
+    try:
+        if os.path.exists(PKCE_FILE):
+            os.remove(PKCE_FILE)
+    except Exception:
+        pass
 
 
 def get_oauth_credentials():
@@ -69,7 +102,7 @@ def get_oauth_credentials():
 
 
 def get_drive_service():
-    """اتصال به Google Drive با OAuth"""
+    """اتصال به Google Drive"""
     try:
         from googleapiclient.discovery import build
         creds = get_oauth_credentials()
@@ -82,21 +115,24 @@ def get_drive_service():
 
 
 def get_auth_url():
-    """ساخت URL برای autorize اولیه با PKCE دستی"""
+    """ساخت URL برای autorize اولیه با PKCE"""
     config = _get_config()
     if config is None:
         return None
 
     from urllib.parse import urlencode
 
-    # پاک کردن هر code_verifier قبلی برای جلوگیری از تداخل
-    if "oauth_code_verifier" in st.session_state:
-        del st.session_state["oauth_code_verifier"]
+    # پاک کردن code_verifier قدیمی
+    _delete_verifier()
 
     code_verifier, code_challenge = _generate_pkce_pair()
 
-    # ذخیره code_verifier جدید در session_state
+    # ذخیره در فایل موقت + session_state
+    _save_verifier(code_verifier)
     st.session_state["oauth_code_verifier"] = code_verifier
+
+    # نمایش دیباگ
+    st.write(f"🔍 **Debug:** code_verifier ذخیره شد، طول: `{len(code_verifier)}`")
 
     params = {
         'client_id': config['client_id'],
@@ -114,16 +150,20 @@ def get_auth_url():
 
 
 def exchange_code_for_token(code):
-    """تبدیل code به refresh token با code_verifier ذخیره‌شده + دیباگ"""
+    """تبدیل code به refresh token"""
     import requests
 
     config = _get_config()
     if config is None:
         return None
 
-    code_verifier = st.session_state.get("oauth_code_verifier", None)
+    # تلاش از فایل موقت، اگر نبود از session_state
+    code_verifier = _load_verifier()
     if not code_verifier:
-        st.error("❌ code_verifier پیدا نشد. لطفاً دوباره autorize کنید.")
+        code_verifier = st.session_state.get("oauth_code_verifier", None)
+
+    if not code_verifier:
+        st.error("❌ code_verifier پیدا نشد.")
         return None
 
     token_data = {
@@ -138,34 +178,27 @@ def exchange_code_for_token(code):
     try:
         response = requests.post(TOKEN_URI, data=token_data, timeout=30)
 
-        # --- نمایش پاسخ کامل گوگل برای دیباگ ---
-        st.write("### 🔍 دیباگ OAuth")
-        st.write(f"**Status Code:** `{response.status_code}`")
-        st.write("**Response Body:**")
-        st.code(response.text)
-        st.write(f"**Code Verifier (طول):** `{len(code_verifier)}`")
-        st.write(f"**Code (طول):** `{len(code)}`")
-        st.write(f"**Redirect URI:** `{REDIRECT_URI}`")
-        st.write(f"**Client ID (۶ کاراکتر اول):** `{config['client_id'][:6]}...`")
-        # --- پایان دیباگ ---
+        # دیباگ
+        st.write(f"🔍 **Debug:** status=`{response.status_code}`, verifier_length=`{len(code_verifier)}`")
 
         response.raise_for_status()
         tokens = response.json()
         refresh_token = tokens.get('refresh_token')
 
         if refresh_token:
+            _delete_verifier()
             st.session_state.pop("oauth_code_verifier", None)
             return refresh_token
         else:
-            st.error("❌ refresh_token در پاسخ گوگل نبود")
+            st.error("❌ refresh_token در پاسخ نبود")
             return None
     except Exception as e:
-        st.error(f"❌ خطا در تبدیل code: {type(e).__name__}: {e}")
+        st.error(f"❌ خطا: {type(e).__name__}: {e}")
+        st.code(response.text if 'response' in locals() else "no response")
         return None
 
 
 def list_files_in_folder(service, folder_id, name_prefix=""):
-    """لیست فایل‌های یک پوشه"""
     try:
         query = f"'{folder_id}' in parents and trashed=false"
         if name_prefix:
@@ -180,7 +213,6 @@ def list_files_in_folder(service, folder_id, name_prefix=""):
 
 
 def upload_mesh_to_drive(mesh, filename, folder_id=None):
-    """ذخیره مش در Google Drive"""
     try:
         from googleapiclient.http import MediaIoBaseUpload
     except ImportError:
@@ -217,12 +249,11 @@ def upload_mesh_to_drive(mesh, filename, folder_id=None):
             ).execute()
             return file.get('id')
     except Exception as e:
-        st.error(f"❌ خطا در ذخیره در Google Drive: {type(e).__name__}: {e}")
+        st.error(f"❌ خطا در ذخیره: {type(e).__name__}: {e}")
         return None
 
 
 def download_mesh_from_drive(filename, folder_id=None):
-    """بارگذاری مش از Google Drive"""
     try:
         from googleapiclient.http import MediaIoBaseDownload
     except ImportError:
@@ -257,5 +288,5 @@ def download_mesh_from_drive(filename, folder_id=None):
         file_stream.seek(0)
         return pickle.load(file_stream)
     except Exception as e:
-        st.warning(f"⚠️ خطا در بارگذاری از Google Drive: {type(e).__name__}: {e}")
+        st.warning(f"⚠️ خطا در بارگذاری: {type(e).__name__}: {e}")
         return None
