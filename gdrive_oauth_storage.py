@@ -1,12 +1,14 @@
 """
 Google Drive Storage with OAuth 2.0
-ذخیره و بازیابی مش‌ها با احراز هویت OAuth
+ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE
 """
 
 import streamlit as st
 import pickle
 import io
 import hashlib
+import secrets
+import base64
 
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
@@ -26,6 +28,15 @@ def _get_config():
     except Exception as e:
         st.error(f"❌ خطا در خواندن secrets: {e}")
         return None
+
+
+def _generate_pkce_pair():
+    """ساخت code_verifier و code_challenge به صورت دستی"""
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode('utf-8')
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode('utf-8')).digest()
+    ).rstrip(b'=').decode('utf-8')
+    return code_verifier, code_challenge
 
 
 def get_oauth_credentials():
@@ -71,69 +82,68 @@ def get_drive_service():
 
 
 def get_auth_url():
-    """ساخت URL برای autorize اولیه + ذخیره code_verifier"""
+    """ساخت URL برای autorize اولیه با PKCE دستی"""
     config = _get_config()
     if config is None:
         return None
 
-    from google_auth_oauthlib.flow import Flow
+    from urllib.parse import urlencode
 
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": config['client_id'],
-                "client_secret": config['client_secret'],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": TOKEN_URI,
-                "redirect_uris": [REDIRECT_URI],
-            }
-        },
-        scopes=SCOPES,
-    )
-    flow.redirect_uri = REDIRECT_URI
+    code_verifier, code_challenge = _generate_pkce_pair()
 
-    auth_url, _ = flow.authorization_url(
-        access_type='offline',
-        prompt='consent',
-        include_granted_scopes='true'
-    )
+    # ذخیره code_verifier در session_state
+    st.session_state["oauth_code_verifier"] = code_verifier
 
-    # --- ذخیره code_verifier در session_state ---
-    st.session_state["oauth_code_verifier"] = flow.code_verifier
+    params = {
+        'client_id': config['client_id'],
+        'redirect_uri': REDIRECT_URI,
+        'response_type': 'code',
+        'scope': ' '.join(SCOPES),
+        'access_type': 'offline',
+        'prompt': 'consent',
+        'code_challenge': code_challenge,
+        'code_challenge_method': 'S256',
+    }
 
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
     return auth_url
 
 
 def exchange_code_for_token(code):
-    """تبدیل code به refresh token با استفاده از code_verifier ذخیره‌شده"""
+    """تبدیل code به refresh token با code_verifier ذخیره‌شده"""
+    import requests
+
     config = _get_config()
     if config is None:
         return None
 
-    from google_auth_oauthlib.flow import Flow
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": config['client_id'],
-                "client_secret": config['client_secret'],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": TOKEN_URI,
-                "redirect_uris": [REDIRECT_URI],
-            }
-        },
-        scopes=SCOPES,
-    )
-    flow.redirect_uri = REDIRECT_URI
-
-    # --- بازیابی code_verifier از session_state ---
     code_verifier = st.session_state.get("oauth_code_verifier", None)
-    if code_verifier:
-        flow.code_verifier = code_verifier
+    if not code_verifier:
+        st.error("❌ code_verifier پیدا نشد. لطفاً دوباره autorize کنید.")
+        return None
+
+    token_data = {
+        'client_id': config['client_id'],
+        'client_secret': config['client_secret'],
+        'code': code,
+        'code_verifier': code_verifier,
+        'grant_type': 'authorization_code',
+        'redirect_uri': REDIRECT_URI,
+    }
 
     try:
-        flow.fetch_token(code=code)
-        return flow.credentials.refresh_token
+        response = requests.post(TOKEN_URI, data=token_data, timeout=30)
+        response.raise_for_status()
+        tokens = response.json()
+        refresh_token = tokens.get('refresh_token')
+
+        if refresh_token:
+            # پاک کردن code_verifier برای بار بعد
+            st.session_state.pop("oauth_code_verifier", None)
+            return refresh_token
+        else:
+            st.error("❌ refresh_token در پاسخ گوگل نبود")
+            return None
     except Exception as e:
         st.error(f"❌ خطا در تبدیل code: {type(e).__name__}: {e}")
         return None
