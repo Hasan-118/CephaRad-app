@@ -1,6 +1,6 @@
 """
 Google Drive Storage with OAuth 2.0
-ذخیره و بازیابی مش‌ها با احراز هویت OAuth - نسخه نهایی با PKCE + فایل موقت
+نسخه نهایی - PKCE پایدار در session_state
 """
 
 import streamlit as st
@@ -9,19 +9,14 @@ import io
 import hashlib
 import secrets
 import base64
-import os
 
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 TOKEN_URI = 'https://oauth2.googleapis.com/token'
 REDIRECT_URI = 'http://localhost'
 
-# مسیر فایل موقت برای ذخیره code_verifier
-PKCE_FILE = '/tmp/aariz_pkce_verifier.txt'
-
 
 def _get_config():
-    """دریافت تنظیمات از secrets"""
     try:
         return {
             'client_id': st.secrets["gdrive_oauth"]["client_id"],
@@ -35,7 +30,6 @@ def _get_config():
 
 
 def _generate_pkce_pair():
-    """ساخت code_verifier و code_challenge"""
     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode('utf-8')
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode('utf-8')).digest()
@@ -43,37 +37,7 @@ def _generate_pkce_pair():
     return code_verifier, code_challenge
 
 
-def _save_verifier(code_verifier):
-    """ذخیره code_verifier در فایل موقت"""
-    try:
-        with open(PKCE_FILE, 'w') as f:
-            f.write(code_verifier)
-    except Exception as e:
-        st.warning(f"⚠️ خطا در ذخیره code_verifier: {e}")
-
-
-def _load_verifier():
-    """بارگذاری code_verifier از فایل موقت"""
-    try:
-        if os.path.exists(PKCE_FILE):
-            with open(PKCE_FILE, 'r') as f:
-                return f.read().strip()
-    except Exception:
-        pass
-    return None
-
-
-def _delete_verifier():
-    """پاک کردن فایل code_verifier"""
-    try:
-        if os.path.exists(PKCE_FILE):
-            os.remove(PKCE_FILE)
-    except Exception:
-        pass
-
-
 def get_oauth_credentials():
-    """ساخت credentials از refresh token"""
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
@@ -102,7 +66,6 @@ def get_oauth_credentials():
 
 
 def get_drive_service():
-    """اتصال به Google Drive"""
     try:
         from googleapiclient.discovery import build
         creds = get_oauth_credentials()
@@ -114,25 +77,33 @@ def get_drive_service():
         return None
 
 
-def get_auth_url():
-    """ساخت URL برای autorize اولیه با PKCE"""
+def get_auth_url(force_new=False):
+    """
+    ساخت URL برای autorize اولیه.
+    اگر code_verifier از قبل در session_state باشد، از همان استفاده می‌شود.
+    فقط با force_new=True یک جفت جدید ساخته می‌شود.
+    """
     config = _get_config()
     if config is None:
         return None
 
     from urllib.parse import urlencode
 
-    # پاک کردن code_verifier قدیمی
-    _delete_verifier()
+    # اگر از قبل code_verifier داریم و force_new نیست، از همان استفاده کن
+    if force_new or "oauth_code_verifier" not in st.session_state:
+        code_verifier, _ = _generate_pkce_pair()
+        st.session_state["oauth_code_verifier"] = code_verifier
+        st.write(f"🔍 **Debug:** verifier جدید ساخته شد، طول: `{len(code_verifier)}`")
+    else:
+        code_verifier = st.session_state["oauth_code_verifier"]
+        st.write(f"🔍 **Debug:** از verifier قبلی استفاده شد، طول: `{len(code_verifier)}`")
 
-    code_verifier, code_challenge = _generate_pkce_pair()
+    # code_challenge را از code_verifier فعلی بساز
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode('utf-8')).digest()
+    ).rstrip(b'=').decode('utf-8')
 
-    # ذخیره در فایل موقت + session_state
-    _save_verifier(code_verifier)
-    st.session_state["oauth_code_verifier"] = code_verifier
-
-    # نمایش دیباگ
-    st.write(f"🔍 **Debug:** code_verifier ذخیره شد، طول: `{len(code_verifier)}`")
+    st.write(f"🔍 **Debug:** challenge طول: `{len(code_challenge)}`")
 
     params = {
         'client_id': config['client_id'],
@@ -150,21 +121,18 @@ def get_auth_url():
 
 
 def exchange_code_for_token(code):
-    """تبدیل code به refresh token"""
     import requests
 
     config = _get_config()
     if config is None:
         return None
 
-    # تلاش از فایل موقت، اگر نبود از session_state
-    code_verifier = _load_verifier()
-    if not code_verifier:
-        code_verifier = st.session_state.get("oauth_code_verifier", None)
-
+    code_verifier = st.session_state.get("oauth_code_verifier", None)
     if not code_verifier:
         st.error("❌ code_verifier پیدا نشد.")
         return None
+
+    st.write(f"🔍 **Debug:** استفاده از verifier با طول `{len(code_verifier)}`")
 
     token_data = {
         'client_id': config['client_id'],
@@ -177,24 +145,24 @@ def exchange_code_for_token(code):
 
     try:
         response = requests.post(TOKEN_URI, data=token_data, timeout=30)
+        st.write(f"🔍 **Debug:** status=`{response.status_code}`")
 
-        # دیباگ
-        st.write(f"🔍 **Debug:** status=`{response.status_code}`, verifier_length=`{len(code_verifier)}`")
+        if response.status_code == 200:
+            tokens = response.json()
+            refresh_token = tokens.get('refresh_token')
 
-        response.raise_for_status()
-        tokens = response.json()
-        refresh_token = tokens.get('refresh_token')
-
-        if refresh_token:
-            _delete_verifier()
-            st.session_state.pop("oauth_code_verifier", None)
-            return refresh_token
+            if refresh_token:
+                st.session_state.pop("oauth_code_verifier", None)
+                return refresh_token
+            else:
+                st.error("❌ refresh_token در پاسخ نبود")
+                return None
         else:
-            st.error("❌ refresh_token در پاسخ نبود")
+            st.error(f"❌ خطا: {response.status_code}")
+            st.code(response.text)
             return None
     except Exception as e:
         st.error(f"❌ خطا: {type(e).__name__}: {e}")
-        st.code(response.text if 'response' in locals() else "no response")
         return None
 
 
