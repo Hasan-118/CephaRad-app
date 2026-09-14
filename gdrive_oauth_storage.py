@@ -1,6 +1,6 @@
 """
 Google Drive Storage with OAuth 2.0
-نسخه نهایی - PKCE پایدار در session_state
+نسخه نهایی - با ذخیره لیست آخرین فایل‌ها
 """
 
 import streamlit as st
@@ -9,6 +9,7 @@ import io
 import hashlib
 import secrets
 import base64
+import json as json_module
 
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
@@ -78,32 +79,22 @@ def get_drive_service():
 
 
 def get_auth_url(force_new=False):
-    """
-    ساخت URL برای autorize اولیه.
-    اگر code_verifier از قبل در session_state باشد، از همان استفاده می‌شود.
-    فقط با force_new=True یک جفت جدید ساخته می‌شود.
-    """
+    """ساخت URL autorize. اگر code_verifier قبلی باشد، از همان استفاده می‌شود."""
     config = _get_config()
     if config is None:
         return None
 
     from urllib.parse import urlencode
 
-    # اگر از قبل code_verifier داریم و force_new نیست، از همان استفاده کن
     if force_new or "oauth_code_verifier" not in st.session_state:
         code_verifier, _ = _generate_pkce_pair()
         st.session_state["oauth_code_verifier"] = code_verifier
-        st.write(f"🔍 **Debug:** verifier جدید ساخته شد، طول: `{len(code_verifier)}`")
     else:
         code_verifier = st.session_state["oauth_code_verifier"]
-        st.write(f"🔍 **Debug:** از verifier قبلی استفاده شد، طول: `{len(code_verifier)}`")
 
-    # code_challenge را از code_verifier فعلی بساز
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode('utf-8')).digest()
     ).rstrip(b'=').decode('utf-8')
-
-    st.write(f"🔍 **Debug:** challenge طول: `{len(code_challenge)}`")
 
     params = {
         'client_id': config['client_id'],
@@ -132,8 +123,6 @@ def exchange_code_for_token(code):
         st.error("❌ code_verifier پیدا نشد.")
         return None
 
-    st.write(f"🔍 **Debug:** استفاده از verifier با طول `{len(code_verifier)}`")
-
     token_data = {
         'client_id': config['client_id'],
         'client_secret': config['client_secret'],
@@ -145,12 +134,10 @@ def exchange_code_for_token(code):
 
     try:
         response = requests.post(TOKEN_URI, data=token_data, timeout=30)
-        st.write(f"🔍 **Debug:** status=`{response.status_code}`")
 
         if response.status_code == 200:
             tokens = response.json()
             refresh_token = tokens.get('refresh_token')
-
             if refresh_token:
                 st.session_state.pop("oauth_code_verifier", None)
                 return refresh_token
@@ -257,4 +244,94 @@ def download_mesh_from_drive(filename, folder_id=None):
         return pickle.load(file_stream)
     except Exception as e:
         st.warning(f"⚠️ خطا در بارگذاری: {type(e).__name__}: {e}")
+        return None
+
+
+# ============================================================
+# ذخیره و بازیابی لیست آخرین فایل‌ها
+# ============================================================
+
+def save_last_files(maxilla_hash, mandible_hash, folder_id=None):
+    """ذخیره hash آخرین فایل‌های آپلود شده در Google Drive"""
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+    except ImportError:
+        return False
+
+    service = get_drive_service()
+    if service is None:
+        return False
+
+    if folder_id is None:
+        config = _get_config()
+        folder_id = config['folder_id'] if config else None
+
+    if folder_id is None:
+        return False
+
+    try:
+        data = {
+            "maxilla_hash": maxilla_hash,
+            "mandible_hash": mandible_hash,
+        }
+        json_bytes = json_module.dumps(data).encode('utf-8')
+        json_stream = io.BytesIO(json_bytes)
+
+        filename = "aariz_last_files.json"
+
+        existing = list_files_in_folder(service, folder_id, filename)
+        matching = [f for f in existing if f['name'] == filename]
+
+        media = MediaIoBaseUpload(json_stream, mimetype='application/json')
+
+        if matching:
+            service.files().update(fileId=matching[0]['id'], media_body=media).execute()
+        else:
+            file_metadata = {'name': filename, 'parents': [folder_id]}
+            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ خطا در ذخیره لیست فایل‌ها: {e}")
+        return False
+
+
+def load_last_files(folder_id=None):
+    """بارگذاری hash آخرین فایل‌های آپلود شده از Google Drive"""
+    try:
+        from googleapiclient.http import MediaIoBaseDownload
+    except ImportError:
+        return None
+
+    service = get_drive_service()
+    if service is None:
+        return None
+
+    if folder_id is None:
+        config = _get_config()
+        folder_id = config['folder_id'] if config else None
+
+    if folder_id is None:
+        return None
+
+    try:
+        filename = "aariz_last_files.json"
+        files = list_files_in_folder(service, folder_id, filename)
+        matching = [f for f in files if f['name'] == filename]
+        if not matching:
+            return None
+
+        file_id = matching[0]['id']
+        request = service.files().get_media(fileId=file_id)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        file_stream.seek(0)
+        data = json_module.loads(file_stream.read().decode('utf-8'))
+        return data
+    except Exception as e:
+        st.warning(f"⚠️ خطا در بارگذاری لیست فایل‌ها: {e}")
         return None
