@@ -1,7 +1,7 @@
 """
 Aariz 3D Analysis Station
 اپلیکیشن تحلیل سه‌بعدی اسکن داخل دهانی + ادغام با سفالومتری
-نسخه: 3.0 - با ذخیره‌سازی در Google Drive (پایدار)
+نسخه: 3.1 - با OAuth Google Drive
 """
 
 import streamlit as st
@@ -10,7 +10,6 @@ import os
 import hashlib
 from datetime import datetime
 
-# --- تنظیمات صفحه ---
 st.set_page_config(
     page_title="Aariz 3D Analysis Station",
     layout="wide",
@@ -41,11 +40,13 @@ except ImportError as e:
     MEASUREMENT_AVAILABLE = False
     MEASUREMENT_ERROR = str(e)
 
-# --- بارگذاری ماژول Google Drive ---
+# --- بارگذاری ماژول Google Drive OAuth ---
 try:
-    from gdrive_storage import (
+    from gdrive_oauth_storage import (
         upload_mesh_to_drive,
         download_mesh_from_drive,
+        get_auth_url,
+        exchange_code_for_token,
     )
     GDRIVE_AVAILABLE = True
     GDRIVE_ERROR = None
@@ -62,12 +63,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ============================================================
-# توابع کمکی
-# ============================================================
-
 def get_file_hash(uploaded_file):
-    """محاسبه hash فایل برای شناسایی یکتا"""
+    """محاسبه hash فایل"""
     if uploaded_file is None:
         return None
     try:
@@ -87,15 +84,55 @@ st.caption("Aariz 3D Analysis Station - Intraoral Scan")
 
 # --- نمایش وضعیت Google Drive ---
 if GDRIVE_AVAILABLE:
-    st.sidebar.success("✅ Google Drive متصل است")
+    try:
+        _token_check = st.secrets["gdrive_oauth"].get("refresh_token", "").strip()
+        if _token_check:
+            st.sidebar.success("✅ Google Drive آماده است")
+        else:
+            st.sidebar.warning("⚠️ Google Drive: نیاز به autorize")
+    except Exception:
+        st.sidebar.warning("⚠️ Google Drive: تنظیمات ناقص")
 else:
     st.sidebar.warning(f"⚠️ Google Drive در دسترس نیست: {GDRIVE_ERROR}")
-    st.sidebar.info("مش‌ها فقط در حافظه موقت ذخیره می‌شوند.")
 
 # ============================================================
-# سایدبار: آپلود JSON سفالومتری
+# سایدبار: OAuth Authorization
 # ============================================================
 st.sidebar.header("📂 ادغام با تحلیل سفالومتری")
+
+with st.sidebar.expander("🔐 اتصال به Google Drive", expanded=False):
+    try:
+        current_token = st.secrets["gdrive_oauth"].get("refresh_token", "").strip()
+    except Exception:
+        current_token = ""
+
+    if current_token:
+        st.success("✅ Google Drive متصل است")
+    else:
+        st.warning("⚠️ هنوز متصل نشده‌اید")
+        st.markdown("**برای اتصال:**")
+
+        auth_url = get_auth_url()
+        if auth_url:
+            st.markdown(f"[1️⃣ کلیک کنید و لاگین کنید]({auth_url})")
+            st.caption("پس از لاگین، یک کد دریافت می‌کنید.")
+
+        auth_code = st.text_input("2️⃣ کد دریافت‌شده:", key="oauth_code_input")
+
+        if st.button("3️⃣ تأیید و اتصال", key="oauth_confirm_btn"):
+            if auth_code:
+                with st.spinner("در حال دریافت Refresh Token..."):
+                    new_token = exchange_code_for_token(auth_code.strip())
+                    if new_token:
+                        st.success("✅ اتصال موفق!")
+                        st.info("⚠️ این Refresh Token را کپی کنید:")
+                        st.code(f'refresh_token = "{new_token}"')
+                        st.caption("Streamlit Cloud → Settings → Secrets → refresh_token")
+                    else:
+                        st.error("❌ دریافت ناموفق بود.")
+            else:
+                st.error("❌ لطفاً کد را وارد کنید.")
+
 st.sidebar.markdown("""
 اگر قبلاً تحلیل سفالومتری (۲D) را انجام داده‌اید،
 فایل JSON دانلود شده را اینجا آپلود کنید تا گزارش نهایی یکپارچه شود.
@@ -104,7 +141,7 @@ st.sidebar.markdown("""
 uploaded_json = st.sidebar.file_uploader(
     "آپلود نتایج سفالومتری (JSON):",
     type=['json'],
-    key="ceph_json_upload_v5"
+    key="ceph_json_upload_v7"
 )
 
 ceph_results = None
@@ -136,7 +173,6 @@ if uploaded_json is not None:
 else:
     st.sidebar.info("ℹ️ بدون فایل JSON، فقط تحلیل ۳D نمایش داده می‌شود.")
 
-# --- نمایش وضعیت ---
 if ceph_results:
     st.success("🔗 **حالت یکپارچه فعال** — گزارش نهایی شامل هر دو تحلیل ۲D و ۳D خواهد بود.")
 else:
@@ -152,12 +188,11 @@ st.subheader("📤 آپلود اسکن‌های سه‌بعدی")
 col_up1, col_up2 = st.columns(2)
 with col_up1:
     stl_maxilla = st.file_uploader("آپلود اسکن فک بالا (Maxilla STL/OBJ):",
-                                    type=['stl', 'obj'], key="max_stl_app3d_v4")
+                                    type=['stl', 'obj'], key="max_stl_app3d_v5")
 with col_up2:
     stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
-                                     type=['stl', 'obj'], key="man_stl_app3d_v4")
+                                     type=['stl', 'obj'], key="man_stl_app3d_v5")
 
-# --- ذخیره‌سازی کلیدهای cache در session_state ---
 if 'mesh_cache_key_max' not in st.session_state:
     st.session_state.mesh_cache_key_max = None
 if 'mesh_cache_key_man' not in st.session_state:
@@ -171,11 +206,9 @@ if stl_maxilla is not None:
 
     mesh_max_loaded = None
 
-    # مرحله ۱: تلاش از session_state
     if st.session_state.mesh_cache_key_max == cache_key_max:
         mesh_max_loaded = st.session_state.get("uploaded_mesh_max", None)
 
-    # مرحله ۲: تلاش از Google Drive
     if mesh_max_loaded is None and GDRIVE_AVAILABLE:
         with st.spinner("🔍 در حال جستجو در Google Drive..."):
             mesh_max_loaded = download_mesh_from_drive(gdrive_filename)
@@ -184,7 +217,6 @@ if stl_maxilla is not None:
                 st.session_state.mesh_cache_key_max = cache_key_max
                 st.info("📥 فک بالا از Google Drive بازیابی شد")
 
-    # مرحله ۳: بارگذاری جدید
     if mesh_max_loaded is None:
         try:
             with st.spinner("در حال بارگذاری فک بالا..."):
@@ -192,7 +224,6 @@ if stl_maxilla is not None:
                 if mesh_max_loaded is not None:
                     st.session_state["uploaded_mesh_max"] = mesh_max_loaded
                     st.session_state.mesh_cache_key_max = cache_key_max
-                    # ذخیره در Google Drive
                     if GDRIVE_AVAILABLE:
                         with st.spinner("📤 در حال ذخیره در Google Drive..."):
                             result = upload_mesh_to_drive(mesh_max_loaded, gdrive_filename)
@@ -214,11 +245,9 @@ if stl_mandible is not None:
 
     mesh_man_loaded = None
 
-    # مرحله ۱: تلاش از session_state
     if st.session_state.mesh_cache_key_man == cache_key_man:
         mesh_man_loaded = st.session_state.get("uploaded_mesh_man", None)
 
-    # مرحله ۲: تلاش از Google Drive
     if mesh_man_loaded is None and GDRIVE_AVAILABLE:
         with st.spinner("🔍 در حال جستجو در Google Drive..."):
             mesh_man_loaded = download_mesh_from_drive(gdrive_filename)
@@ -227,7 +256,6 @@ if stl_mandible is not None:
                 st.session_state.mesh_cache_key_man = cache_key_man
                 st.info("📥 فک پایین از Google Drive بازیابی شد")
 
-    # مرحله ۳: بارگذاری جدید
     if mesh_man_loaded is None:
         try:
             with st.spinner("در حال بارگذاری فک پایین..."):
@@ -249,7 +277,7 @@ if stl_mandible is not None:
         st.success(f"✅ فک پایین: {len(mesh_man_loaded.vertices)} رأس")
 
 # ============================================================
-# بخش ۲: نمایش مستقیم نمای سه‌بعدی (Plotly)
+# بخش ۲: نمای سه‌بعدی
 # ============================================================
 mesh_max_current = st.session_state.get("uploaded_mesh_max", None)
 mesh_man_current = st.session_state.get("uploaded_mesh_man", None)
@@ -265,7 +293,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_max_current, target_faces=20000)
                 fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
-                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v3")
+                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v5")
             except Exception as e:
                 st.error(f"خطا در نمایش فک بالا: {e}")
 
@@ -275,7 +303,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_man_current, target_faces=20000)
                 fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
-                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v3")
+                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v5")
             except Exception as e:
                 st.error(f"خطا در نمایش فک پایین: {e}")
 else:
@@ -329,14 +357,14 @@ else:
     st.error(f"❌ ماژول `tooth_measurement.py` یافت نشد: {MEASUREMENT_ERROR}")
 
 # ============================================================
-# بخش ۴: گزارش یکپارچه PDF
+# بخش ۴: گزارش PDF
 # ============================================================
 if ceph_results:
     st.divider()
     st.header("📄 گزارش نهایی یکپارچه")
     st.markdown("**گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D) و اسکن داخل دهانی (۳D).")
 
-    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v5"):
+    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v7"):
         try:
             from ceph_reporter import generate_unified_report
 
@@ -355,7 +383,7 @@ if ceph_results:
                 file_name=f"Aariz_Unified_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
-                key="download_unified_pdf_v5"
+                key="download_unified_pdf_v7"
             )
             st.success("✅ گزارش آماده دانلود است.")
         except ImportError:
