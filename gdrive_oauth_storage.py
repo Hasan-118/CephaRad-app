@@ -71,7 +71,7 @@ def get_drive_service():
 
 
 def get_auth_url():
-    """ساخت URL برای autorize اولیه"""
+    """ساخت URL برای autorize اولیه + ذخیره code_verifier"""
     config = _get_config()
     if config is None:
         return None
@@ -97,11 +97,15 @@ def get_auth_url():
         prompt='consent',
         include_granted_scopes='true'
     )
+
+    # --- ذخیره code_verifier در session_state ---
+    st.session_state["oauth_code_verifier"] = flow.code_verifier
+
     return auth_url
 
 
 def exchange_code_for_token(code):
-    """تبدیل code به refresh token"""
+    """تبدیل code به refresh token با استفاده از code_verifier ذخیره‌شده"""
     config = _get_config()
     if config is None:
         return None
@@ -121,6 +125,11 @@ def exchange_code_for_token(code):
         scopes=SCOPES,
     )
     flow.redirect_uri = REDIRECT_URI
+
+    # --- بازیابی code_verifier از session_state ---
+    code_verifier = st.session_state.get("oauth_code_verifier", None)
+    if code_verifier:
+        flow.code_verifier = code_verifier
 
     try:
         flow.fetch_token(code=code)
