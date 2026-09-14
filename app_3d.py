@@ -1,7 +1,7 @@
 """
 Aariz 3D Analysis Station
 اپلیکیشن تحلیل سه‌بعدی اسکن داخل دهانی + ادغام با سفالومتری
-نسخه: 3.1 - با OAuth Google Drive
+نسخه: 3.2 - با OAuth پایدار (PKCE در session_state)
 """
 
 import streamlit as st
@@ -112,10 +112,19 @@ with st.sidebar.expander("🔐 اتصال به Google Drive", expanded=False):
         st.warning("⚠️ هنوز متصل نشده‌اید")
         st.markdown("**برای اتصال:**")
 
-        auth_url = get_auth_url()
+        # دکمه ساخت لینک جدید (تا code_verifier پایدار بماند)
+        if st.button("🔄 ساخت لینک جدید autorize", key="gen_auth_url_btn"):
+            auth_url_new = get_auth_url(force_new=True)
+            st.session_state["auth_url_cached"] = auth_url_new
+            st.session_state["show_auth_link"] = True
+
+        # نمایش لینک (فقط بعد از ساخت)
+        auth_url = st.session_state.get("auth_url_cached", None)
         if auth_url:
             st.markdown(f"[1️⃣ کلیک کنید و لاگین کنید]({auth_url})")
             st.caption("پس از لاگین، یک کد دریافت می‌کنید.")
+        else:
+            st.caption("ابتدا روی دکمه بالا کلیک کنید تا لینک ساخته شود.")
 
         auth_code = st.text_input("2️⃣ کد دریافت‌شده:", key="oauth_code_input")
 
@@ -141,7 +150,7 @@ st.sidebar.markdown("""
 uploaded_json = st.sidebar.file_uploader(
     "آپلود نتایج سفالومتری (JSON):",
     type=['json'],
-    key="ceph_json_upload_v7"
+    key="ceph_json_upload_v8"
 )
 
 ceph_results = None
@@ -188,10 +197,10 @@ st.subheader("📤 آپلود اسکن‌های سه‌بعدی")
 col_up1, col_up2 = st.columns(2)
 with col_up1:
     stl_maxilla = st.file_uploader("آپلود اسکن فک بالا (Maxilla STL/OBJ):",
-                                    type=['stl', 'obj'], key="max_stl_app3d_v5")
+                                    type=['stl', 'obj'], key="max_stl_app3d_v6")
 with col_up2:
     stl_mandible = st.file_uploader("آپلود اسکن فک پایین (Mandible STL/OBJ):",
-                                     type=['stl', 'obj'], key="man_stl_app3d_v5")
+                                     type=['stl', 'obj'], key="man_stl_app3d_v6")
 
 if 'mesh_cache_key_max' not in st.session_state:
     st.session_state.mesh_cache_key_max = None
@@ -293,7 +302,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_max_current, target_faces=20000)
                 fig_max = create_3d_plotly_figure(mesh_simple, "Maxillary Arch")
-                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v5")
+                st.plotly_chart(fig_max, use_container_width=True, key="plotly_max_app3d_v6")
             except Exception as e:
                 st.error(f"خطا در نمایش فک بالا: {e}")
 
@@ -303,7 +312,7 @@ if mesh_max_current is not None or mesh_man_current is not None:
             try:
                 mesh_simple = safe_simplify_mesh(mesh_man_current, target_faces=20000)
                 fig_man = create_3d_plotly_figure(mesh_simple, "Mandibular Arch")
-                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v5")
+                st.plotly_chart(fig_man, use_container_width=True, key="plotly_man_app3d_v6")
             except Exception as e:
                 st.error(f"خطا در نمایش فک پایین: {e}")
 else:
@@ -364,7 +373,7 @@ if ceph_results:
     st.header("📄 گزارش نهایی یکپارچه")
     st.markdown("**گزارش PDF یکپارچه** شامل هر دو تحلیل سفالومتری (۲D) و اسکن داخل دهانی (۳D).")
 
-    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v7"):
+    if st.button("🖨 تولید گزارش یکپارچه PDF", use_container_width=True, key="gen_pdf_btn_v8"):
         try:
             from ceph_reporter import generate_unified_report
 
@@ -383,7 +392,7 @@ if ceph_results:
                 file_name=f"Aariz_Unified_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
-                key="download_unified_pdf_v7"
+                key="download_unified_pdf_v8"
             )
             st.success("✅ گزارش آماده دانلود است.")
         except ImportError:
